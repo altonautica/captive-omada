@@ -210,11 +210,16 @@ const handlePortalResponse = (response) => {
 
   DOM.safeHide("oper-hint");
 
-  // Validate Voucher access availability
-  //   Uncomment this when ready for prod
-  // const voucherEnabled = Array.isArray(globalConfig.hotspotTypes) &&
-  //     globalConfig.hotspotTypes.includes(AUTH_TYPES.VOUCHER_ACCESS_TYPE);
-  const voucherEnabled = true;
+  // Validate Voucher access availability. In local dev the portal settings
+  // endpoint isn't backed by a real Omada controller, so force-enable; in prod
+  // derive it from the controller's advertised hotspot types.
+  const isLocalDev = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(
+    location.hostname,
+  );
+  const voucherEnabled = isLocalDev
+    ? true
+    : Array.isArray(globalConfig.hotspotTypes) &&
+      globalConfig.hotspotTypes.includes(AUTH_TYPES.VOUCHER_ACCESS_TYPE);
 
   window.__portalBlockAccess = !voucherEnabled;
 

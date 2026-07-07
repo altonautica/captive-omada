@@ -41,9 +41,6 @@ const getOmadaPathInfo = () => {
       location.hostname,
     );
     const segments = window.location.pathname.split("/").filter(Boolean);
-    console.log("Path segments:", segments);
-
-    console.log("1", DEV_PATH_FALLBACK);
 
     // Find 'entry' index, preferring the one after 'portal'
     let entryIndex = -1;
@@ -54,19 +51,17 @@ const getOmadaPathInfo = () => {
       }
     }
 
-    console.log("2", DEV_PATH_FALLBACK);
     if (entryIndex === -1) {
       entryIndex = segments.indexOf("entry");
     }
 
     // No portal path (e.g. localhost dev server): fall back only in local dev,
     // otherwise there is no site to resolve.
-
-    console.log("3", DEV_PATH_FALLBACK);
     if (entryIndex === -1) return isLocalDev ? DEV_PATH_FALLBACK : null;
 
     const [controllerId, siteId, portalId] = segments.slice(entryIndex + 1);
-    return siteId ? { controllerId, siteId, portalId } : DEV_PATH_FALLBACK;
+    if (siteId) return { controllerId, siteId, portalId };
+    return isLocalDev ? DEV_PATH_FALLBACK : null;
   } catch (error) {
     console.error("Failed to parse Omada path info:", error);
     return null;
@@ -125,7 +120,20 @@ const createApiRequest = async (url, options = {}) => {
 
   try {
     const response = await fetch(url, config);
-    const result = await response.json();
+
+    // Tolerate empty (204) and non-JSON bodies (e.g. a 502/500 HTML page) instead
+    // of letting response.json() throw a SyntaxError.
+    let result = {};
+    if (response.status !== 204) {
+      const text = await response.text();
+      if (text) {
+        try {
+          result = JSON.parse(text);
+        } catch {
+          result = { message: text };
+        }
+      }
+    }
 
     return {
       response,
@@ -211,7 +219,13 @@ const signUp = async (name, email, password) => {
       password,
     );
     if (name) {
-      await cred.user.updateProfile({ displayName: name });
+      // The account already exists at this point; a display-name failure must not
+      // abort signup (else a retry hits auth/email-already-in-use).
+      try {
+        await cred.user.updateProfile({ displayName: name });
+      } catch (profileError) {
+        console.warn("Failed to update display name:", profileError);
+      }
     }
     idToken = await cred.user.getIdToken();
   } catch (error) {
@@ -309,10 +323,6 @@ const getOrders = async (siteId) => {
   }
 
   const url = `${API_BASE_URL}/site-orders?siteId=${encodeURIComponent(effectiveSiteId)}`;
-  console.debug("[altonautApi] Fetching site orders", {
-    siteId: effectiveSiteId,
-    url,
-  });
 
   try {
     const { response, result, meta } = await createApiRequest(url, {
@@ -337,9 +347,6 @@ const getOrders = async (siteId) => {
       };
     }
 
-    console.debug("[altonautApi] Site orders fetched successfully", {
-      count: orders.length,
-    });
     return { success: true, orders, meta };
   } catch (error) {
     console.error("[altonautApi] Site orders error:", error);
@@ -371,10 +378,6 @@ const getPackages = async (siteId) => {
   }
 
   const url = `${API_BASE_URL}/site/${encodeURIComponent(effectiveSiteId)}/vouchers`;
-  console.debug("[altonautApi] Fetching site packages", {
-    siteId: effectiveSiteId,
-    url,
-  });
 
   try {
     const { response, result, meta } = await createApiRequest(url, {
@@ -402,9 +405,6 @@ const getPackages = async (siteId) => {
       };
     }
 
-    console.debug("[altonautApi] Site packages fetched successfully", {
-      count: packages.length,
-    });
     return { success: true, packages, meta };
   } catch (error) {
     console.error("[altonautApi] Site packages error:", error);

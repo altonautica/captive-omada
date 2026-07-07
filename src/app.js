@@ -103,12 +103,6 @@ const UI = {
  */
 const resolveSiteId = () => {
   try {
-    const siteId = window.altonautApi?.getOmadaPathInfo?.()?.siteId;
-    console.log(
-      "window api",
-      window.altonautApi,
-      window.altonautApi.getOmadaPathInfo(),
-    );
     return window.altonautApi?.getOmadaPathInfo?.()?.siteId || null;
   } catch (error) {
     console.error("Failed to resolve site ID:", error);
@@ -435,16 +429,23 @@ const PackageManager = {
     return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : "—";
   },
 
-  // quota/limits arrive in MB; 1024 MB = 1 GB.
+  // quota/limits arrive in MB; show MB under 1 GB, else GB.
   formatQuota(mb) {
     const n = Number(mb);
-    return Number.isFinite(n) ? `${PackageManager.trimNumber(n / 1024)} GB` : "—";
+    if (!Number.isFinite(n)) return "—";
+    if (n < 1024) return `${PackageManager.trimNumber(n)} MB`;
+    return `${PackageManager.trimNumber(n / 1024)} GB`;
   },
 
-  // duration arrives in minutes; 1440 min = 1 day.
+  // duration arrives in minutes; show minutes/hours under a day, else days.
   formatDuration(minutes) {
     const n = Number(minutes);
     if (!Number.isFinite(n)) return "—";
+    if (n < 60) return `${PackageManager.trimNumber(n)} ${n === 1 ? "minute" : "minutes"}`;
+    if (n < 1440) {
+      const hours = PackageManager.trimNumber(n / 60);
+      return `${hours} ${hours === "1" ? "hour" : "hours"}`;
+    }
     const days = PackageManager.trimNumber(n / 1440);
     return `${days} ${days === "1" ? "day" : "days"}`;
   },
