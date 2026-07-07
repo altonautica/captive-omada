@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "dev": "npx --yes serve -l 4173 src",
     "clean": "rm -rf dist/stage",
     "build:tailwind": "mkdir -p dist && tailwindcss -c tailwind.config.js -i ./src/tailwind.input.css -o ./dist/tailwind.min.css --minify",
     "build:stage": "mkdir -p dist/stage && cp -R src/. dist/stage/ && sed -i '' 's|dist/tailwind.min.css|tailwind.min.css|g' dist/stage/index.html && cp dist/tailwind.min.css dist/stage/tailwind.min.css",
