@@ -41,7 +41,6 @@ const getOmadaPathInfo = () => {
       location.hostname,
     );
     const segments = window.location.pathname.split("/").filter(Boolean);
-    console.log("segments", segments);
 
     // Find 'entry' index, preferring the one after 'portal'
     let entryIndex = -1;
@@ -450,10 +449,16 @@ const logCaptivePortalActivity = async (overrides = {}) => {
 
     // Optional network context from the Omada redirect. Omada uses these query
     // keys; normalize to null so absent params are explicitly empty, not "".
+    const present = (value) =>
+      value !== undefined && value !== null && value !== "";
     const pick = (...keys) => {
+      // Explicit overrides win over any query param, so check all overrides
+      // before falling back to the query string.
       for (const key of keys) {
-        const value = overrides[key] ?? query[key];
-        if (value) return value;
+        if (present(overrides[key])) return overrides[key];
+      }
+      for (const key of keys) {
+        if (present(query[key])) return query[key];
       }
       return null;
     };
