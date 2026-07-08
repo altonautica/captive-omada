@@ -212,6 +212,12 @@ const AuthManager = {
         // is needed. Persist the user as the client-side "logged in" marker.
         const user = result.user || { email };
         sessionStorage.setItem("authUser", JSON.stringify(user));
+
+        // Fire-and-forget: log the login activity now that the AuthToken session
+        // cookie is set. Never awaited/blocking — a logging failure must not gate
+        // the user's internet access (handled/swallowed inside the API helper).
+        window.altonautApi?.logCaptivePortalActivity?.();
+
         UI.hideLoading();
         SectionManager.showCaptiveSection(user);
       } else {

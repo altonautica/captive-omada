@@ -7,7 +7,7 @@
 //   3. anything else (e.g. the deployed Omada portal) -> prod backend
 const API_BASE_URL = "http://localhost:3333/api/v1";
 // uncomment this when ready to prod.
-// const API_BASE_URL = 'https://data.altonaut.id/api/v1'
+// const API_BASE_URL = "https://data.altonaut.id/api/v1";
 
 // Utility functions
 const getQueryParams = () => {
@@ -41,6 +41,7 @@ const getOmadaPathInfo = () => {
       location.hostname,
     );
     const segments = window.location.pathname.split("/").filter(Boolean);
+    console.log("segments", segments);
 
     // Find 'entry' index, preferring the one after 'portal'
     let entryIndex = -1;
@@ -412,6 +413,91 @@ const getPackages = async (siteId) => {
   }
 };
 
+/**
+ * Log a captive-portal login activity (best-effort / fire-and-forget).
+ *
+ * Call this ONLY after a successful login/signup — the backend derives the user
+ * from the AuthToken session cookie set at login, so calling it earlier yields a
+ * 401. Required fields (siteId, controllerId, portalId) come from the portal
+ * path; optional network context comes from the Omada redirect query params.
+ *
+ * Never throws and never blocks portal access: a missing session/site or a
+ * failed request is logged and swallowed.
+ *
+ * @param {object} [overrides] - Optional explicit values (merged over the
+ *   values derived from the path/query params).
+ * @returns {Promise<{ success: boolean, activity?: object, error?: string, meta?: object }>}
+ */
+const logCaptivePortalActivity = async (overrides = {}) => {
+  try {
+    const pathInfo = getOmadaPathInfo();
+    const query = getQueryParams();
+
+    const siteId = overrides.siteId ?? pathInfo?.siteId;
+    const controllerId = overrides.controllerId ?? pathInfo?.controllerId;
+    const portalId = overrides.portalId ?? pathInfo?.portalId;
+
+    // Required fields — skip the call rather than send an invalid (422) request.
+    if (!siteId || !controllerId || !portalId) {
+      console.warn(
+        "[altonautApi] Skipping activity log: missing site/controller/portal id.",
+      );
+      return {
+        success: false,
+        error: "Missing required site/controller/portal id.",
+      };
+    }
+
+    // Optional network context from the Omada redirect. Omada uses these query
+    // keys; normalize to null so absent params are explicitly empty, not "".
+    const pick = (...keys) => {
+      for (const key of keys) {
+        const value = overrides[key] ?? query[key];
+        if (value) return value;
+      }
+      return null;
+    };
+
+    const body = {
+      siteId,
+      controllerId,
+      portalId,
+      apMac: pick("apMac"),
+      clientMac: pick("clientMac"),
+      clientIp: pick("clientIp"),
+      ssidName: pick("ssidName", "ssid"),
+      radioId: pick("radioId"),
+      originUrl: pick("originUrl", "redirectUrl"),
+    };
+
+    const { response, result, meta } = await createApiRequest(
+      `${API_BASE_URL}/captive-portal-activities`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+
+    if (!response.ok) {
+      console.error("Failed to log captive-portal activity", {
+        status: meta.status,
+        body: result,
+      });
+      return {
+        success: false,
+        error: extractError(result, "Failed to log activity."),
+        meta: { ...meta, body: result },
+      };
+    }
+
+    return { success: true, activity: result?.data || result, meta };
+  } catch (error) {
+    // Best-effort: never block portal access on a logging failure.
+    console.error("Failed to log captive-portal activity", error);
+    return { success: false, error: error?.message || "Request failed." };
+  }
+};
+
 // Export API
 window.altonautApi = {
   login,
@@ -420,4 +506,5 @@ window.altonautApi = {
   getOrders,
   getPackages,
   getOmadaPathInfo,
+  logCaptivePortalActivity,
 };
