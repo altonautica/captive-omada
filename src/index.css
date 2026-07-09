@@ -1,4 +1,5 @@
-* {
+*, *::before, *::after {
+    box-sizing: border-box;
     padding: 0;
     margin: 0;
 }
@@ -102,8 +103,48 @@ body.portal {
     height: auto;
 }
 
+.password-field {
+    position: relative;
+    width: 100%;
+}
+
+.password-input {
+    padding-left: 1rem;
+    padding-right: 5.5rem;
+}
+
+.password-toggle {
+    position: absolute;
+    top: 50%;
+    right: 0.75rem;
+    z-index: 1;
+    padding: 0.25rem;
+    border: 0;
+    background: transparent;
+    line-height: 1.25rem;
+    cursor: pointer;
+    transform: translateY(-50%);
+}
+
+.reset-password-row {
+    margin-top: 0.5rem;
+    text-align: right;
+}
+
 .order-list-container {
     max-height: 340px;
+}
+
+.voucher-tab-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    width: 100%;
+}
+
+.voucher-tab-list > [role="tab"] {
+    min-width: 0;
+    width: 100%;
 }
 
 #user-info-bar {

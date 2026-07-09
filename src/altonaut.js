@@ -355,59 +355,74 @@ const getOrders = async (siteId) => {
 };
 
 /**
- * Get the list of packages available at a site.
- *
- * Unlike getOrders (which returns what a user has already purchased), this
- * returns the site's catalog of purchasable packages. Any authenticated user
- * may call it — auth is carried by the session cookie, no admin headers.
- *
- * GET {API_BASE_URL}/site/{siteId}/vouchers
- *
- * @param {string} [siteId] - Site ID (optional, defaults to path value)
- * @returns {Promise<{ success: boolean, packages?: object[], error?: string, meta?: object }>}
+ * @typedef {object} OwnedVoucher
+ * @property {string} id
+ * @property {string} code
+ * @property {number} status
+ * @property {string|null} assignedAt
+ * @property {string|null} expirationDate
+ * @property {boolean} isActive
+ * @property {string} voucherGroupId
+ * @property {string|null} packageId
+ * @property {string|null} packageName
  */
-const getPackages = async (siteId) => {
-  const pathInfo = getOmadaPathInfo();
-  const effectiveSiteId = siteId || pathInfo?.siteId;
 
-  if (!effectiveSiteId) {
-    return {
-      success: false,
-      error: "Site not found. Please contact technical support.",
-    };
-  }
+/**
+ * @typedef {object} MyVouchersData
+ * @property {OwnedVoucher[]} active
+ * @property {OwnedVoucher[]} past
+ */
 
-  const url = `${API_BASE_URL}/site/${encodeURIComponent(effectiveSiteId)}/vouchers`;
-
+/**
+ * Get the authenticated user's vouchers. The backend owns grouping and
+ * ordering; callers must not reclassify or sort these arrays.
+ *
+ * GET {API_BASE_URL}/me/vouchers
+ *
+ * @returns {Promise<{ success: boolean, vouchers?: MyVouchersData, error?: string, meta?: object }>}
+ */
+const getMyVouchers = async () => {
   try {
-    const { response, result, meta } = await createApiRequest(url, {
-      method: "GET",
-      cache: "no-store",
-    });
+    const { response, result, meta } = await createApiRequest(
+      `${API_BASE_URL}/me/vouchers`,
+      {
+        method: "GET",
+        cache: "no-store",
+      },
+    );
 
     if (!response.ok) {
-      // Backend errors (404 "Location not found for site", 401, ...) carry a
-      // readable `message`; surface it so the caller can show it verbatim.
       return {
         success: false,
-        error: extractError(result, "Failed to fetch packages."),
+        error: extractError(result, "Failed to fetch vouchers."),
         meta: { ...meta, body: result },
       };
     }
 
-    // `data` may legitimately be [] when the site has no packages assigned.
-    const packages = result?.data || [];
-    if (!Array.isArray(packages)) {
+    const vouchers = result?.data;
+    if (
+      !vouchers ||
+      typeof vouchers !== "object" ||
+      !Array.isArray(vouchers.active) ||
+      !Array.isArray(vouchers.past)
+    ) {
       return {
         success: false,
-        error: "Invalid packages payload.",
+        error: "Invalid vouchers payload.",
         meta: { ...meta, body: result },
       };
     }
 
-    return { success: true, packages, meta };
+    return {
+      success: true,
+      vouchers: {
+        active: vouchers.active,
+        past: vouchers.past,
+      },
+      meta,
+    };
   } catch (error) {
-    console.error("[altonautApi] Site packages error:", error);
+    console.error("[altonautApi] My vouchers error:", error);
     throw error;
   }
 };
@@ -509,7 +524,7 @@ window.altonautApi = {
   signUp,
   getUser,
   getOrders,
-  getPackages,
+  getMyVouchers,
   getOmadaPathInfo,
   logCaptivePortalActivity,
 };
