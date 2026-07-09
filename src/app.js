@@ -6,8 +6,6 @@ const APP_CONFIG = {
   HIDE_ERROR_DELAY: 5000,
 };
 
-let isSignUpMode = false;
-
 window.addEventListener("error", (e) => {
   console.error("Global error:", e.error || e.message || e);
 });
@@ -157,7 +155,7 @@ const SectionManager = {
     if (elements.userEmail) elements.userEmail.textContent = user.email;
 
     SectionManager.updateStepIndicators(2);
-    PackageManager.renderEmbedded();
+    MyVouchersManager.renderEmbedded();
   },
 
   /**
@@ -180,6 +178,16 @@ const SectionManager = {
  * Handles user authentication operations
  */
 const AuthManager = {
+  /**
+   * Clears an invalid local session and returns the user to sign-in.
+   * @param {string} [message]
+   */
+  expireSession(message = "Your session has expired. Please sign in again.") {
+    sessionStorage.removeItem("authUser");
+    SectionManager.showAuthSection();
+    UI.showAuthError(message);
+  },
+
   /**
    * Creates a timeout handler for authentication requests
    * @returns {Function} Cleanup function to clear the timeout
@@ -235,19 +243,6 @@ const AuthManager = {
   },
 
   /**
-   * Handles user sign up process
-   * @param {string} name - User's full name
-   * @param {string} email - User's email address
-   * @param {string} password - User's password
-   */
-  async signUp(name, email, password) {
-    UI.showLoading();
-    const clearTimeout = AuthManager.createTimeoutHandler();
-    const authPromise = window.altonautApi.signUp(name, email, password);
-    await AuthManager.handleAuthResponse(authPromise, email, clearTimeout);
-  },
-
-  /**
    * Handles user sign in process
    * @param {string} email - User's email address
    * @param {string} password - User's password
@@ -265,56 +260,23 @@ const AuthManager = {
   logout() {
     sessionStorage.removeItem("authUser");
     document.getElementById("auth-form")?.reset();
+    AuthManager.setPasswordVisibility(false);
     document.getElementById("auth-error-message")?.classList.add("hidden");
     SectionManager.showAuthSection();
   },
 
   /**
-   * Toggles between sign in and sign up modes
+   * Sets whether the password value is visible.
+   * @param {boolean} isVisible
    */
-  toggleMode() {
-    isSignUpMode = !isSignUpMode;
+  setPasswordVisibility(isVisible) {
+    const input = document.getElementById("auth-password");
+    const toggle = document.getElementById("toggle-password");
+    if (!input || !toggle) return;
 
-    const elements = {
-      nameContainer: document.getElementById("auth-name-container"),
-      title: document.getElementById("auth-title"),
-      subtitle: document.getElementById("auth-subtitle"),
-      button: document.getElementById("auth-button"),
-      toggleLink: document.getElementById("toggle-auth-mode"),
-      toggleText: document.getElementById("auth-toggle-text"),
-      errorMessage: document.getElementById("auth-error-message"),
-    };
-
-    const config = isSignUpMode
-      ? {
-          nameVisible: true,
-          title: "Create Account",
-          subtitle: "Sign up to access the network",
-          button: "Sign Up",
-          toggleText: "Already have an account?",
-          toggleLink: "Sign in instead",
-        }
-      : {
-          nameVisible: false,
-          title: "Welcome Back",
-          subtitle: "Please sign in with your account to continue",
-          button: "Sign In",
-          toggleText: "Don't have an account?",
-          toggleLink: "Sign up here",
-        };
-
-    if (elements.nameContainer) {
-      elements.nameContainer.classList.toggle("hidden", !config.nameVisible);
-    }
-    if (elements.title) elements.title.textContent = config.title;
-    if (elements.subtitle) elements.subtitle.textContent = config.subtitle;
-    if (elements.button) elements.button.textContent = config.button;
-    if (elements.toggleText)
-      elements.toggleText.textContent = config.toggleText;
-    if (elements.toggleLink)
-      elements.toggleLink.textContent = config.toggleLink;
-
-    elements.errorMessage?.classList.add("hidden");
+    input.type = isVisible ? "text" : "password";
+    toggle.textContent = isVisible ? "Hide" : "Unhide";
+    toggle.setAttribute("aria-pressed", String(isVisible));
   },
 };
 
@@ -423,124 +385,332 @@ const OrderManager = {
 };
 
 /**
- * Manages the site package catalog display (GET /site/{siteId}/vouchers).
- *
- * Packages are the purchasable catalog for a site (name, quota, validity,
- * price) — distinct from orders (what a user already bought). Rendered as
- * display cards; there is no purchase/voucher flow wired to them yet.
+ * Manages the authenticated user's server-grouped voucher history.
  */
-const PackageManager = {
-  // Formats a number, dropping a trailing ".0" (1 -> "1", 1.5 -> "1.5").
-  trimNumber(n) {
-    return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : "—";
+const MyVouchersManager = {
+  container: null,
+  activeTab: "active",
+  vouchers: { active: [], past: [] },
+
+  statusLabel(status) {
+    return (
+      {
+        0: "Unused",
+        1: "Used",
+        2: "Expired",
+      }[status] || "Unknown"
+    );
   },
 
-  // quota/limits arrive in MB; show MB under 1 GB, else GB.
-  formatQuota(mb) {
-    const n = Number(mb);
-    if (!Number.isFinite(n)) return "—";
-    if (n < 1024) return `${PackageManager.trimNumber(n)} MB`;
-    return `${PackageManager.trimNumber(n / 1024)} GB`;
-  },
-
-  // duration arrives in minutes; show minutes/hours under a day, else days.
-  formatDuration(minutes) {
-    const n = Number(minutes);
-    if (!Number.isFinite(n)) return "—";
-    if (n < 60) return `${PackageManager.trimNumber(n)} ${n === 1 ? "minute" : "minutes"}`;
-    if (n < 1440) {
-      const hours = PackageManager.trimNumber(n / 60);
-      return `${hours} ${hours === "1" ? "hour" : "hours"}`;
+  formatDate(value, nullFallback) {
+    if (value === null || value === undefined || value === "") {
+      return nullFallback;
     }
-    const days = PackageManager.trimNumber(n / 1440);
-    return `${days} ${days === "1" ? "day" : "days"}`;
+
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "Unknown date" : date.toLocaleString();
   },
 
-  // down/up limits arrive in MB (Kbps-equivalent); divide by 1024 for Mbps.
-  formatSpeed(mb) {
-    const n = Number(mb);
-    return Number.isFinite(n) ? PackageManager.trimNumber(n / 1024) : "—";
+  createTextElement(tagName, className, text) {
+    const element = document.createElement(tagName);
+    element.className = className;
+    element.textContent = text;
+    return element;
   },
 
-  /**
-   * Fetches packages from the API and renders them into a container.
-   * @param {HTMLElement} containerElement - Container to render packages in
-   */
-  async fetchAndRender(containerElement) {
+  showLoading(containerElement) {
+    containerElement.innerHTML = `
+      <div class="space-y-3" role="status" aria-label="Loading vouchers">
+        <span class="sr-only">Loading vouchers...</span>
+        <div class="animate-pulse bg-gray-200 rounded-lg h-24"></div>
+        <div class="animate-pulse bg-gray-200 rounded-lg h-24"></div>
+      </div>
+    `;
+  },
+
+  async fetchAndRender(containerElement, resetTab = false) {
     if (!containerElement) return;
 
-    containerElement.innerHTML =
-      "<div class='text-gray-500 text-center'>Loading packages...</div>";
+    this.container = containerElement;
+    if (resetTab) this.activeTab = "active";
+    this.showLoading(containerElement);
 
     if (!sessionStorage.getItem("authUser")) {
-      containerElement.innerHTML =
-        "<div class='text-red-500 text-center'>Not authenticated.</div>";
-      return;
-    }
-
-    const siteId = resolveSiteId();
-    if (!siteId) {
-      containerElement.innerHTML =
-        "<div class='text-red-500 text-center'>Site not found. Please contact technical support.</div>";
+      AuthManager.expireSession("Please sign in to view your vouchers.");
       return;
     }
 
     try {
-      const result = await window.altonautApi.getPackages(siteId);
+      const result = await window.altonautApi.getMyVouchers();
 
-      if (result.success && Array.isArray(result.packages)) {
-        if (result.packages.length === 0) {
-          containerElement.innerHTML =
-            "<div class='text-gray-500 text-center'>No packages available at this location yet.</div>";
-        } else {
-          containerElement.innerHTML = "";
-          result.packages.forEach((pkg) => {
-            containerElement.appendChild(PackageManager.createPackageCard(pkg));
-          });
-        }
-      } else {
-        // Surface the backend's readable message (404/401) when present.
-        containerElement.innerHTML = `<div class='text-red-500 text-center'>${result?.error || "Error loading packages. Please try again later."}</div>`;
+      if (result.success && result.vouchers) {
+        this.vouchers = result.vouchers;
+        this.render();
+        return;
       }
+
+      if (result?.meta?.status === 401 || result?.meta?.status === 403) {
+        AuthManager.expireSession();
+        return;
+      }
+
+      this.renderError(
+        result?.error || "Unable to load vouchers. Please try again.",
+      );
     } catch (error) {
-      containerElement.innerHTML =
-        "<div class='text-red-500 text-center'>Error loading packages. Please try again later.</div>";
-      console.error("Error fetching packages:", error);
+      console.error("Error fetching vouchers:", error);
+      this.renderError("Unable to load vouchers. Please try again.");
     }
   },
 
-  /**
-   * Creates a DOM element for displaying a package.
-   * @param {Object} pkg - Package data object
-   * @returns {HTMLElement} The created package card element
-   */
-  createPackageCard(pkg) {
-    const card = document.createElement("div");
-    card.className = "border rounded-lg p-4 shadow transition";
+  renderError(message) {
+    if (!this.container) return;
+    this.container.innerHTML = "";
 
-    const quota = PackageManager.formatQuota(pkg.quota);
-    const duration = PackageManager.formatDuration(pkg.duration);
-    const down = PackageManager.formatSpeed(pkg.downLimit);
-    const up = PackageManager.formatSpeed(pkg.upLimit);
+    const error = this.createTextElement(
+      "p",
+      "text-red-600 text-center mb-3",
+      message,
+    );
+    error.setAttribute("role", "alert");
 
-    card.innerHTML = `
-            <div class="font-bold text-lg text-primary mb-2">${pkg.packageName || "Unnamed Package"}</div>
-            <div class="flex flex-wrap gap-2">
-                <span class="text-xs bg-gray-100 text-gray-700 rounded-full px-3 py-1">${quota}</span>
-                <span class="text-xs bg-gray-100 text-gray-700 rounded-full px-3 py-1">${duration}</span>
-                <span class="text-xs bg-gray-100 text-gray-700 rounded-full px-3 py-1">↓ ${down} / ↑ ${up} Mbps</span>
-            </div>
-        `;
+    const retry = this.createTextElement(
+      "button",
+      "w-full border border-primary text-primary font-semibold py-2 px-4 rounded-lg focus-ring",
+      "Retry",
+    );
+    retry.type = "button";
+    retry.addEventListener("click", () => this.refresh());
+
+    this.container.append(error, retry);
+  },
+
+  render() {
+    if (!this.container) return;
+    this.container.innerHTML = "";
+
+    const tabList = document.createElement("div");
+    tabList.className = "voucher-tab-list mb-4";
+    tabList.setAttribute("role", "tablist");
+    tabList.setAttribute("aria-label", "Voucher history");
+
+    ["active", "past"].forEach((tabName) => {
+      const selected = this.activeTab === tabName;
+      const label = tabName === "active" ? "Active" : "Past";
+      const button = this.createTextElement(
+        "button",
+        selected
+          ? "bg-primary text-white font-semibold py-2 px-3 rounded-lg focus-ring"
+          : "bg-gray-100 text-gray-700 font-semibold py-2 px-3 rounded-lg focus-ring",
+        `${label} (${this.vouchers[tabName].length})`,
+      );
+
+      button.type = "button";
+      button.id = `voucher-tab-${tabName}`;
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", String(selected));
+      button.setAttribute("aria-controls", "voucher-tab-panel");
+      button.tabIndex = selected ? 0 : -1;
+      button.addEventListener("click", () => this.selectTab(tabName, true));
+      button.addEventListener("keydown", (event) =>
+        this.handleTabKeydown(event, tabName),
+      );
+      tabList.appendChild(button);
+    });
+
+    const panel = document.createElement("div");
+    panel.id = "voucher-tab-panel";
+    panel.className = "space-y-4";
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-labelledby", `voucher-tab-${this.activeTab}`);
+    panel.tabIndex = 0;
+
+    const selectedVouchers = this.vouchers[this.activeTab];
+    if (selectedVouchers.length === 0) {
+      panel.appendChild(
+        this.createTextElement(
+          "p",
+          "text-gray-500 text-center py-6",
+          this.activeTab === "active"
+            ? "You have no active vouchers."
+            : "You have no past vouchers.",
+        ),
+      );
+    } else {
+      selectedVouchers.forEach((voucher) => {
+        panel.appendChild(
+          this.createVoucherCard(voucher, this.activeTab === "active"),
+        );
+      });
+    }
+
+    this.container.append(tabList, panel);
+  },
+
+  selectTab(tabName, focusTab = false) {
+    if (tabName !== "active" && tabName !== "past") return;
+    this.activeTab = tabName;
+    this.render();
+    if (focusTab) document.getElementById(`voucher-tab-${tabName}`)?.focus();
+  },
+
+  handleTabKeydown(event, tabName) {
+    const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(event.key)) return;
+
+    event.preventDefault();
+    const nextTab =
+      event.key === "Home"
+        ? "active"
+        : event.key === "End"
+          ? "past"
+          : tabName === "active"
+            ? "past"
+            : "active";
+    this.selectTab(nextTab, true);
+  },
+
+  createDetail(label, value) {
+    const row = document.createElement("p");
+    row.className = "text-sm text-gray-600";
+
+    const labelElement = this.createTextElement(
+      "span",
+      "font-medium text-gray-700",
+      `${label}: `,
+    );
+    row.append(labelElement, document.createTextNode(value));
+    return row;
+  },
+
+  createVoucherCard(voucher, isActive) {
+    const card = document.createElement("article");
+    card.className = "border border-gray-200 rounded-lg p-4 shadow";
+
+    const header = document.createElement("div");
+    header.className = "flex items-start justify-between gap-3 mb-3";
+
+    const packageName = this.createTextElement(
+      "h3",
+      "font-bold text-lg text-primary",
+      voucher.packageName || "Unknown package",
+    );
+    const status = this.createTextElement(
+      "span",
+      "text-xs bg-gray-100 text-gray-700 rounded-full px-3 py-1",
+      this.statusLabel(voucher.status),
+    );
+    header.append(packageName, status);
+
+    const code = document.createElement("p");
+    code.className = "text-sm text-gray-700 mb-2";
+    code.appendChild(
+      this.createTextElement("span", "font-medium", "Code: "),
+    );
+    code.appendChild(
+      this.createTextElement(
+        "code",
+        "font-mono break-all text-gray-900",
+        voucher.code || "Unavailable",
+      ),
+    );
+
+    card.append(
+      header,
+      code,
+      this.createDetail(
+        "Assigned",
+        this.formatDate(voucher.assignedAt, "Not assigned"),
+      ),
+      this.createDetail(
+        "Expires",
+        this.formatDate(voucher.expirationDate, "Does not expire"),
+      ),
+    );
+
+    if (isActive) {
+      const actions = document.createElement("div");
+      actions.className = "grid grid-cols-2 gap-2 mt-4";
+
+      const useButton = this.createTextElement(
+        "button",
+        "bg-primary hover:bg-primary-dark text-white font-semibold py-2 px-3 rounded-lg focus-ring",
+        "Use Voucher",
+      );
+      useButton.type = "button";
+      useButton.setAttribute(
+        "aria-label",
+        `Use voucher ${voucher.code || ""}`.trim(),
+      );
+      useButton.addEventListener("click", () =>
+        VoucherManager.useOrder(voucher),
+      );
+
+      const copyButton = this.createTextElement(
+        "button",
+        "border border-primary text-primary font-semibold py-2 px-3 rounded-lg focus-ring",
+        "Copy Code",
+      );
+      copyButton.type = "button";
+      copyButton.setAttribute(
+        "aria-label",
+        `Copy voucher code ${voucher.code || ""}`.trim(),
+      );
+      copyButton.addEventListener("click", () =>
+        this.copyCode(voucher.code, copyButton),
+      );
+
+      actions.append(useButton, copyButton);
+      card.appendChild(actions);
+    }
 
     return card;
   },
 
-  /**
-   * Renders the embedded package list in the captive portal section.
-   */
+  async copyCode(code, button) {
+    if (!code) {
+      UI.showCaptiveError("This voucher has no code to copy.");
+      return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(code);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = code;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        const copied = document.execCommand("copy");
+        input.remove();
+        if (!copied) throw new Error("Copy command was rejected.");
+      }
+
+      button.textContent = "Copied";
+      button.setAttribute("aria-label", "Voucher code copied");
+      window.setTimeout(() => {
+        if (!button.isConnected) return;
+        button.textContent = "Copy Code";
+        button.setAttribute("aria-label", `Copy voucher code ${code}`);
+      }, 1500);
+    } catch (error) {
+      console.error("Copy voucher code failed:", error);
+      UI.showCaptiveError("Could not copy the voucher code.");
+    }
+  },
+
+  refresh() {
+    const container =
+      this.container || document.getElementById("voucher-list-embedded");
+    return this.fetchAndRender(container);
+  },
+
   renderEmbedded() {
-    const container = document.getElementById("order-list-embedded");
-    PackageManager.fetchAndRender(container);
+    const container = document.getElementById("voucher-list-embedded");
+    return this.fetchAndRender(container, true);
   },
 };
 
@@ -600,10 +770,10 @@ const EventManager = {
    */
   setup() {
     document
-      .getElementById("toggle-auth-mode")
-      ?.addEventListener("click", (e) => {
-        e.preventDefault();
-        AuthManager.toggleMode();
+      .getElementById("toggle-password")
+      ?.addEventListener("click", () => {
+        const password = document.getElementById("auth-password");
+        AuthManager.setPasswordVisibility(password?.type === "password");
       });
 
     document.getElementById("auth-form")?.addEventListener("submit", (e) => {
@@ -616,16 +786,7 @@ const EventManager = {
         return;
       }
 
-      if (isSignUpMode) {
-        const name = document.getElementById("auth-name")?.value;
-        if (!name) {
-          UI.showAuthError("Please enter your name");
-          return;
-        }
-        AuthManager.signUp(name, email, password);
-      } else {
-        AuthManager.signIn(email, password);
-      }
+      AuthManager.signIn(email, password);
     });
 
     document.getElementById("logout-link")?.addEventListener("click", (e) => {
@@ -633,7 +794,7 @@ const EventManager = {
       AuthManager.logout();
     });
 
-    ["auth-name", "auth-email", "auth-password"].forEach((id) => {
+    ["auth-email", "auth-password"].forEach((id) => {
       const element = document.getElementById(id);
       if (element) {
         element.addEventListener("input", () => {
@@ -706,7 +867,7 @@ const KeyboardManager = {
       };
 
       ["focus", "click"].forEach((type) => {
-        ["auth-email", "auth-password", "auth-name"].forEach((id) => {
+        ["auth-email", "auth-password"].forEach((id) => {
           document
             .getElementById(id)
             ?.addEventListener(type, ensureInputVisible);
@@ -790,5 +951,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
 window.showCaptiveError = UI.showCaptiveError;
 window.useOrderForVoucher = VoucherManager.useOrder;
+window.refreshMyVouchers = () => MyVouchersManager.refresh();
 window.showConfigError = UI.showConfigError;
 window.resolveSiteId = resolveSiteId;
