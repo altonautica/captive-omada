@@ -14,6 +14,8 @@ const voucher = (overrides = {}) => ({
   voucherGroupId: "internal-group-id",
   packageId: "internal-package-id",
   packageName: "Daily Access",
+  usedQuota: 0,
+  totalQuota: 1024,
   ...overrides,
 });
 
@@ -85,9 +87,11 @@ describe("My Vouchers UI", () => {
     const tabs = document.querySelectorAll('[role="tab"]');
     expect(tabs[0].textContent).toBe("Active (2)");
     expect(tabs[1].textContent).toBe("Past (1)");
-    expect(document.body.textContent.indexOf("NEWEST")).toBeLessThan(
-      document.body.textContent.indexOf("OLDER"),
+    expect(document.body.textContent.indexOf("Newest package")).toBeLessThan(
+      document.body.textContent.indexOf("Older package"),
     );
+    expect(document.body.textContent).not.toContain("NEWEST");
+    expect(document.body.textContent).not.toContain("OLDER");
 
     click(tabs[1]);
     expect(document.body.textContent).toContain("Unknown package");
@@ -150,25 +154,31 @@ describe("My Vouchers UI", () => {
     expect(window.altonautApi.getMyVouchers).toHaveBeenCalledTimes(2);
   });
 
-  it("copies an active code with accessible success feedback", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
+  it("hides voucher codes and copy controls", async () => {
     window.altonautApi.getMyVouchers.mockResolvedValue(
       success([voucher()], []),
     );
 
     await window.refreshMyVouchers();
-    const copyButton = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent === "Copy Code",
-    );
-    click(copyButton);
 
-    await vi.waitFor(() => expect(copyButton.textContent).toBe("Copied"));
-    expect(writeText).toHaveBeenCalledWith("WIFI-1234");
-    expect(copyButton.getAttribute("aria-label")).toBe("Voucher code copied");
+    expect(document.body.textContent).not.toContain("WIFI-1234");
+    expect(document.body.textContent).not.toContain("Copy Code");
+    expect(
+      [...document.querySelectorAll("button")].some(
+        (button) => button.textContent === "Copy Code",
+      ),
+    ).toBe(false);
+  });
+
+  it("formats dates as DD MMM YYYY and shows data usage", async () => {
+    window.altonautApi.getMyVouchers.mockResolvedValue(
+      success([voucher({ usedQuota: 256, totalQuota: 2048 })], []),
+    );
+
+    await window.refreshMyVouchers();
+
+    expect(document.body.textContent).toMatch(/\d{2} Jul 2026/);
+    expect(document.body.textContent).toContain("256 MB / 2 GB");
   });
 
   it("submits active vouchers through the existing Omada flow", async () => {

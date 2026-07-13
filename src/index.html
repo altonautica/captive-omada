@@ -9,8 +9,17 @@
     
     <link rel="stylesheet" href="dist/tailwind.min.css">
     <link rel="stylesheet" href="index.css">
-    <script src="vendor/firebase-app-compat.js"></script>
-    <script src="vendor/firebase-auth-compat.js"></script>
+    <!--
+      Firebase Web SDK (compat, 10.14.1) is loaded from Google's CDN rather than
+      shipped inside the Omada portal upload: the controller's local-portal serving
+      truncates/drops large files, which corrupted vendor/firebase-auth-compat.js
+      (139 KB) in production and left firebase.auth undefined.
+      REQUIRED: add www.gstatic.com to the Omada walled garden so these load before
+      the client is authenticated. The vendor/ copies are kept as a committed
+      fallback / for local dev reference.
+    -->
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
     <script src="firebase.js"></script>
     <script src="altonaut.js"></script>
     <script src="jquery.min.js"></script>

@@ -5,9 +5,9 @@
 //   1. window.__ALTONAUT_API_BASE_URL override (set before this script loads)
 //   2. localhost/loopback -> dev backend
 //   3. anything else (e.g. the deployed Omada portal) -> prod backend
-const API_BASE_URL = "http://localhost:3333/api/v1";
+// const API_BASE_URL = "http://localhost:3333/api/v1";
 // uncomment this when ready to prod.
-// const API_BASE_URL = "https://data.altonaut.id/api/v1";
+const API_BASE_URL = "https://data.altonaut.id/api/v1";
 
 // Utility functions
 const getQueryParams = () => {

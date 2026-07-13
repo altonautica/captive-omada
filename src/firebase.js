@@ -19,8 +19,19 @@ const firebaseConfig = {
 
 if (typeof firebase === "undefined") {
   console.error(
-    "[firebase.js] Firebase SDK not loaded. Ensure vendor/firebase-app-compat.js " +
-      "and vendor/firebase-auth-compat.js are included before this file.",
+    "[firebase.js] Firebase SDK not loaded. Ensure the firebase-app-compat and " +
+      "firebase-auth-compat scripts are included before this file (and that " +
+      "www.gstatic.com is in the Omada walled garden if loading from the CDN).",
+  );
+} else if (typeof firebase.auth !== "function") {
+  // firebase-app-compat loaded but firebase-auth-compat did not attach .auth.
+  // In Omada local portals this happens when the (large) auth SDK file is
+  // truncated/dropped by the controller. Surface it clearly instead of letting
+  // firebase.auth() throw a cryptic "firebase.auth is not a function".
+  console.error(
+    "[firebase.js] Firebase Auth SDK failed to load (firebase.auth is missing). " +
+      "The firebase-auth-compat script did not load or execute — verify it returns " +
+      "HTTP 200 with its full body and that www.gstatic.com is in the walled garden.",
   );
 } else if (Object.values(firebaseConfig).some((v) => v === "REPLACE_ME")) {
   console.error(

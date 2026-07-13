@@ -408,7 +408,24 @@ const MyVouchersManager = {
     }
 
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? "Unknown date" : date.toLocaleString();
+    if (Number.isNaN(date.getTime())) return "Unknown date";
+
+    const day = String(date.getDate()).padStart(2, "0");
+    const month = date.toLocaleString("en-US", { month: "short" });
+    return `${day} ${month} ${date.getFullYear()}`;
+  },
+
+  formatQuota(value) {
+    if (value === null || value === undefined || value === "") return null;
+
+    const mb = Number(value);
+    if (Number.isNaN(mb)) return null;
+
+    if (mb >= 1024) {
+      const gb = mb / 1024;
+      return `${Number.isInteger(gb) ? gb : gb.toFixed(2)} GB`;
+    }
+    return `${mb} MB`;
   },
 
   createTextElement(tagName, className, text) {
@@ -585,10 +602,14 @@ const MyVouchersManager = {
 
   createVoucherCard(voucher, isActive) {
     const card = document.createElement("article");
-    card.className = "border border-gray-200 rounded-lg p-4 shadow";
+    card.className =
+      "border border-gray-200 rounded-lg p-4 shadow flex items-center justify-between gap-4";
+
+    const content = document.createElement("div");
+    content.className = "flex-1 min-w-0";
 
     const header = document.createElement("div");
-    header.className = "flex items-start justify-between gap-3 mb-3";
+    header.className = "flex items-center flex-wrap gap-3 mb-3";
 
     const packageName = this.createTextElement(
       "h3",
@@ -602,22 +623,8 @@ const MyVouchersManager = {
     );
     header.append(packageName, status);
 
-    const code = document.createElement("p");
-    code.className = "text-sm text-gray-700 mb-2";
-    code.appendChild(
-      this.createTextElement("span", "font-medium", "Code: "),
-    );
-    code.appendChild(
-      this.createTextElement(
-        "code",
-        "font-mono break-all text-gray-900",
-        voucher.code || "Unavailable",
-      ),
-    );
-
-    card.append(
+    content.append(
       header,
-      code,
       this.createDetail(
         "Assigned",
         this.formatDate(voucher.assignedAt, "Not assigned"),
@@ -628,78 +635,35 @@ const MyVouchersManager = {
       ),
     );
 
-    if (isActive) {
-      const actions = document.createElement("div");
-      actions.className = "grid grid-cols-2 gap-2 mt-4";
+    const totalQuota = this.formatQuota(voucher.totalQuota);
+    if (totalQuota !== null) {
+      const usedQuota = this.formatQuota(voucher.usedQuota) || "0 MB";
+      content.appendChild(
+        this.createDetail("Data", `${usedQuota} / ${totalQuota}`),
+      );
+    }
 
+    card.appendChild(content);
+
+    if (isActive) {
       const useButton = this.createTextElement(
         "button",
-        "bg-primary hover:bg-primary-dark text-white font-semibold py-2 px-3 rounded-lg focus-ring",
+        "flex-shrink-0 bg-primary hover:bg-primary-dark text-white font-semibold py-2 px-4 rounded-lg focus-ring",
         "Use Voucher",
       );
       useButton.type = "button";
       useButton.setAttribute(
         "aria-label",
-        `Use voucher ${voucher.code || ""}`.trim(),
+        `Use voucher for ${voucher.packageName || "package"}`.trim(),
       );
       useButton.addEventListener("click", () =>
         VoucherManager.useOrder(voucher),
       );
 
-      const copyButton = this.createTextElement(
-        "button",
-        "border border-primary text-primary font-semibold py-2 px-3 rounded-lg focus-ring",
-        "Copy Code",
-      );
-      copyButton.type = "button";
-      copyButton.setAttribute(
-        "aria-label",
-        `Copy voucher code ${voucher.code || ""}`.trim(),
-      );
-      copyButton.addEventListener("click", () =>
-        this.copyCode(voucher.code, copyButton),
-      );
-
-      actions.append(useButton, copyButton);
-      card.appendChild(actions);
+      card.appendChild(useButton);
     }
 
     return card;
-  },
-
-  async copyCode(code, button) {
-    if (!code) {
-      UI.showCaptiveError("This voucher has no code to copy.");
-      return;
-    }
-
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(code);
-      } else {
-        const input = document.createElement("textarea");
-        input.value = code;
-        input.setAttribute("readonly", "");
-        input.style.position = "fixed";
-        input.style.opacity = "0";
-        document.body.appendChild(input);
-        input.select();
-        const copied = document.execCommand("copy");
-        input.remove();
-        if (!copied) throw new Error("Copy command was rejected.");
-      }
-
-      button.textContent = "Copied";
-      button.setAttribute("aria-label", "Voucher code copied");
-      window.setTimeout(() => {
-        if (!button.isConnected) return;
-        button.textContent = "Copy Code";
-        button.setAttribute("aria-label", `Copy voucher code ${code}`);
-      }, 1500);
-    } catch (error) {
-      console.error("Copy voucher code failed:", error);
-      UI.showCaptiveError("Could not copy the voucher code.");
-    }
   },
 
   refresh() {
