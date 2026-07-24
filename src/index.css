@@ -133,6 +133,7 @@ body.portal {
 
 .order-list-container {
     max-height: 340px;
+    overflow-y: auto;
 }
 
 .voucher-tab-list {
