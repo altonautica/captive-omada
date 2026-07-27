@@ -42,10 +42,15 @@ if (typeof firebase === "undefined") {
 } else {
   firebase.initializeApp(firebaseConfig);
 
-  // Captive portal is a one-shot flow; do not persist auth state across visits.
+  // Captive portal is a one-shot flow, so auth must not outlive the tab — but it
+  // does have to survive a reload *within* it: on iOS the API is authenticated
+  // with a Firebase ID token (the cross-site session cookie is blocked there),
+  // and Persistence.NONE would drop the refresh token on reload, leaving only a
+  // cached ID token that expires after an hour. SESSION keeps it in
+  // sessionStorage, so it still dies with the tab.
   firebase
     .auth()
-    .setPersistence(firebase.auth.Auth.Persistence.NONE)
+    .setPersistence(firebase.auth.Auth.Persistence.SESSION)
     .catch((error) => {
       console.warn("[firebase.js] Failed to set auth persistence:", error);
     });

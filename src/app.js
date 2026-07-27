@@ -184,6 +184,7 @@ const AuthManager = {
    */
   expireSession(message = "Your session has expired. Please sign in again.") {
     sessionStorage.removeItem("authUser");
+    window.altonautApi?.clearIdToken?.();
     SectionManager.showAuthSection();
     UI.showAuthError(message);
   },
@@ -259,6 +260,8 @@ const AuthManager = {
    */
   logout() {
     sessionStorage.removeItem("authUser");
+    window.altonautApi?.clearIdToken?.();
+    window.firebaseAuth?.signOut?.().catch(() => {});
     document.getElementById("auth-form")?.reset();
     AuthManager.setPasswordVisibility(false);
     document.getElementById("auth-error-message")?.classList.add("hidden");
