@@ -103,23 +103,90 @@ const mapFirebaseAuthError = (error) => {
   }
 };
 
+// Bearer-token auth (iOS fix)
+// --------------------------------------------------------------------------
+// The backend's AuthToken cookie is a *cross-site* cookie here: the portal is
+// served by the Omada controller while the API lives on data.altonaut.id.
+// iOS Safari (and the captive-network mini browser) block cross-site cookies
+// outright under "Prevent Cross-Site Tracking", which is on by default — so on
+// iPhone the cookie is never stored and every follow-up call comes back 401,
+// surfacing as "Your session has expired". Android Chrome still accepts
+// SameSite=None cookies, which is why it only broke on iOS.
+//
+// The backend accepts `Authorization: Bearer <Firebase ID token>` on protected
+// routes, so we send that on every request as well. The cookie is still sent
+// (credentials: "include") for browsers where it works; the header is what
+// makes iOS work.
+const ID_TOKEN_STORAGE_KEY = "altonautIdToken";
+
+const readStoredIdToken = () => {
+  try {
+    return sessionStorage.getItem(ID_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const storeIdToken = (token) => {
+  try {
+    if (token) sessionStorage.setItem(ID_TOKEN_STORAGE_KEY, token);
+  } catch {
+    // Storage can be unavailable (private mode); the in-memory Firebase user
+    // still supplies the token for the life of this page.
+  }
+};
+
+const clearIdToken = () => {
+  try {
+    sessionStorage.removeItem(ID_TOKEN_STORAGE_KEY);
+  } catch {
+    // no-op
+  }
+};
+
+/**
+ * Current Firebase ID token for the Authorization header.
+ * Prefers a live token from the signed-in Firebase user (which auto-refreshes),
+ * and falls back to the copy cached at login for page reloads.
+ * @param {boolean} [forceRefresh] - Bypass Firebase's token cache.
+ * @returns {Promise<string|null>}
+ */
+const getIdTokenForRequest = async (forceRefresh = false) => {
+  const user = window.firebaseAuth?.currentUser;
+  if (user) {
+    try {
+      const token = await user.getIdToken(forceRefresh);
+      storeIdToken(token);
+      return token;
+    } catch (error) {
+      console.warn("[altonautApi] Failed to get Firebase ID token:", error);
+    }
+  }
+  return forceRefresh ? null : readStoredIdToken();
+};
+
 const createApiRequest = async (url, options = {}) => {
-  const config = {
-    // Auth is cookie-based: the backend sets an HttpOnly session cookie on
-    // login and expects it back on every subsequent request. `include` is
-    // required for cross-origin (portal :4173 -> API :3333) cookie flow, and
-    // the backend allows it via Access-Control-Allow-Credentials: true.
-    credentials: "include",
-    headers: {
+  const { auth = true, headers: extraHeaders, ...rest } = options;
+
+  const send = async (token) => {
+    const headers = {
       "Content-Type": "application/json",
       Accept: "application/json",
-      ...options.headers,
-    },
-    ...options,
-  };
+      ...extraHeaders,
+    };
+    if (token && !headers.Authorization) {
+      headers.Authorization = `Bearer ${token}`;
+    }
 
-  try {
-    const response = await fetch(url, config);
+    const response = await fetch(url, {
+      // The backend also sets an HttpOnly session cookie on login and accepts
+      // it back where the browser allows it. `include` is required for the
+      // cross-origin (portal -> API) cookie flow, and the backend permits it
+      // via Access-Control-Allow-Credentials: true.
+      credentials: "include",
+      ...rest,
+      headers,
+    });
 
     // Tolerate empty (204) and non-JSON bodies (e.g. a 502/500 HTML page) instead
     // of letting response.json() throw a SyntaxError.
@@ -132,6 +199,26 @@ const createApiRequest = async (url, options = {}) => {
         } catch {
           result = { message: text };
         }
+      }
+    }
+
+    return { response, result };
+  };
+
+  try {
+    const token = auth ? await getIdTokenForRequest() : null;
+    let { response, result } = await send(token);
+
+    // A cached ID token expires after an hour; on a 401/403 retry once with a
+    // freshly minted one before treating the session as gone.
+    if (
+      auth &&
+      (response.status === 401 || response.status === 403) &&
+      window.firebaseAuth?.currentUser
+    ) {
+      const freshToken = await getIdTokenForRequest(true);
+      if (freshToken && freshToken !== token) {
+        ({ response, result } = await send(freshToken));
       }
     }
 
@@ -169,6 +256,9 @@ const login = async (email, password) => {
       password,
     );
     idToken = await cred.user.getIdToken();
+    // Cache it so a page reload can still authenticate on browsers that drop
+    // the cross-site session cookie (iOS Safari).
+    storeIdToken(idToken);
   } catch (error) {
     // Firebase throws on bad credentials; convert to the {success,error} shape
     // handleAuthResponse expects so the user sees a specific message.
@@ -181,6 +271,9 @@ const login = async (email, password) => {
       `${API_BASE_URL}/auth/login`,
       {
         method: "POST",
+        // The idToken is the credential here, in the body — no bearer header
+        // (and no retry-on-401) is wanted on the exchange itself.
+        auth: false,
         body: JSON.stringify({ idToken }),
       },
     );
@@ -228,6 +321,7 @@ const signUp = async (name, email, password) => {
       }
     }
     idToken = await cred.user.getIdToken();
+    storeIdToken(idToken);
   } catch (error) {
     console.error("Firebase sign-up error:", error);
     return { success: false, error: mapFirebaseAuthError(error) };
@@ -241,6 +335,7 @@ const signUp = async (name, email, password) => {
       `${API_BASE_URL}/auth/signup`,
       {
         method: "POST",
+        auth: false,
         body: JSON.stringify({ idToken, name }),
       },
     );
@@ -527,4 +622,5 @@ window.altonautApi = {
   getMyVouchers,
   getOmadaPathInfo,
   logCaptivePortalActivity,
+  clearIdToken,
 };
