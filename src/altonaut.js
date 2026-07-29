@@ -103,6 +103,25 @@ const mapFirebaseAuthError = (error) => {
   }
 };
 
+/**
+ * Builds the error thrown when window.firebaseAuth is missing at sign-in time.
+ *
+ * firebase.js records the failing step in window.firebaseInitError; we hand that
+ * whole string to the user because the portal runs in a captive-network mini
+ * browser with no reachable console — a screenshot of this message is the only
+ * field diagnostic available. If the flag is absent too, firebase.js itself never
+ * ran, which is its own distinct cause.
+ *
+ * @returns {Error}
+ */
+const firebaseUnavailableError = () =>
+  new Error(
+    window.firebaseInitError ||
+      "Firebase is not initialized and firebase.js reported no reason — the " +
+        "script itself did not load or execute. Check that firebase.js was " +
+        "included in the portal upload and returns HTTP 200.",
+  );
+
 // Bearer-token auth (iOS fix)
 // --------------------------------------------------------------------------
 // The backend's AuthToken cookie is a *cross-site* cookie here: the portal is
@@ -249,7 +268,7 @@ const login = async (email, password) => {
   let idToken;
   try {
     if (!window.firebaseAuth) {
-      throw new Error("Firebase is not initialized.");
+      throw firebaseUnavailableError();
     }
     const cred = await window.firebaseAuth.signInWithEmailAndPassword(
       email,
@@ -305,7 +324,7 @@ const signUp = async (name, email, password) => {
   let idToken;
   try {
     if (!window.firebaseAuth) {
-      throw new Error("Firebase is not initialized.");
+      throw firebaseUnavailableError();
     }
     const cred = await window.firebaseAuth.createUserWithEmailAndPassword(
       email,
