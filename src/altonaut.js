@@ -234,6 +234,45 @@ const createApiRequest = async (url, options = {}) => {
 };
 
 /**
+ * Finishes a login that already holds a Firebase ID token: trades it with the
+ * backend for the AuthToken session cookie and the user profile.
+ *
+ * Shared by the password form and the login-code flow — the session the two
+ * produce is byte-for-byte identical, so nothing downstream of this may branch
+ * on how the user got here.
+ *
+ * @param {string} idToken
+ * @param {string} [failureMessage] - Fallback copy when the backend sends none.
+ * @returns {Promise<{ success: boolean, user?: object, error?: string, meta?: object }>}
+ */
+const exchangeIdTokenForSession = async (
+  idToken,
+  failureMessage = "Login failed.",
+) => {
+  const { response, result, meta } = await createApiRequest(
+    `${API_BASE_URL}/auth/login`,
+    {
+      method: "POST",
+      // The idToken is the credential here, in the body — no bearer header
+      // (and no retry-on-401) is wanted on the exchange itself.
+      auth: false,
+      body: JSON.stringify({ idToken }),
+    },
+  );
+
+  const user = extractUser(result);
+  if (response.ok && user) {
+    return { success: true, user, meta };
+  }
+
+  return {
+    success: false,
+    error: extractError(result, failureMessage),
+    meta: { ...meta, body: result },
+  };
+};
+
+/**
  * Login function
  *
  * Signs the user in with Firebase (client-side), then exchanges the resulting
@@ -267,27 +306,7 @@ const login = async (email, password) => {
   }
 
   try {
-    const { response, result, meta } = await createApiRequest(
-      `${API_BASE_URL}/auth/login`,
-      {
-        method: "POST",
-        // The idToken is the credential here, in the body — no bearer header
-        // (and no retry-on-401) is wanted on the exchange itself.
-        auth: false,
-        body: JSON.stringify({ idToken }),
-      },
-    );
-
-    const user = extractUser(result);
-    if (response.ok && user) {
-      return { success: true, user, meta };
-    }
-
-    return {
-      success: false,
-      error: extractError(result, "Login failed."),
-      meta: { ...meta, body: result },
-    };
+    return await exchangeIdTokenForSession(idToken, "Login failed.");
   } catch (error) {
     console.error("Login error:", error);
     throw error;
@@ -353,6 +372,142 @@ const signUp = async (name, email, password) => {
   } catch (error) {
     console.error("Sign up error:", error);
     throw error;
+  }
+};
+
+// Sign in with a login code
+// --------------------------------------------------------------------------
+// The user reads a 6-digit code off their profile in the app — where they are
+// already signed in — instead of typing an email and password on a laptop that
+// has just joined the Wi-Fi.
+//
+// This is three calls, not one. POST /auth/login-code does NOT log anyone in:
+// it returns a Firebase *custom* token, which only the Firebase SDK accepts.
+// Only after signInWithCustomToken() do we hold a real ID token, and that is
+// what /auth/login has always taken.
+//
+// Failed attempts are rate limited per IP, and on a vessel one IP is the whole
+// boat: every guest shares the budget. So this never sends a request it can
+// reject itself, and never retries on its own.
+const LOGIN_CODE_LENGTH = 6;
+const LOGIN_CODE_PATTERN = /^\d{6}$/;
+
+const LOGIN_CODE_MESSAGES = {
+  // A 422 costs the vessel a throttle attempt, so this copy should only ever be
+  // reached client-side.
+  incomplete: `Enter all ${LOGIN_CODE_LENGTH} digits.`,
+  // The backend returns one indistinguishable 401 for unknown / expired /
+  // already-used / disabled — deliberately, so guessing cannot confirm that a
+  // code was ever real. Never infer a more specific reason than this.
+  invalid:
+    "That code isn't valid or has expired. Open your profile in the app for the current one.",
+  throttled:
+    "Too many attempts from this network. Wait a few minutes, or sign in with your email and password.",
+  spent: "That code has already been used — check your profile for a new one.",
+  failed: "Sign in failed. Please try again.",
+  network: "Network error. Please check your connection and try again.",
+};
+
+/**
+ * Strips the separators people type when a code is read aloud ("041 820",
+ * "041-820") so formatting never reaches the server as a 422.
+ * @param {string} value
+ * @returns {string}
+ */
+const normalizeLoginCode = (value) =>
+  typeof value === "string" ? value.replace(/[\s-]/g, "") : "";
+
+/**
+ * Sign in with a 6-digit login code.
+ *
+ * Spending the code (step 1) is irreversible: if Firebase or the session
+ * exchange then fails, the code is gone and resubmitting it returns 401. The
+ * caller must send the user back to code entry — never retry the same digits.
+ *
+ * @param {string} rawCode - Digits, with or without spaces/dashes.
+ * @returns {Promise<{ success: boolean, user?: object, error?: string,
+ *   throttled?: boolean, codeSpent?: boolean, meta?: object }>}
+ */
+const loginWithCode = async (rawCode) => {
+  const code = normalizeLoginCode(rawCode);
+
+  // Reject locally rather than burning an attempt the whole vessel shares.
+  if (!LOGIN_CODE_PATTERN.test(code)) {
+    return { success: false, error: LOGIN_CODE_MESSAGES.incomplete };
+  }
+
+  let customToken;
+  try {
+    const { response, result, meta } = await createApiRequest(
+      `${API_BASE_URL}/auth/login-code`,
+      {
+        method: "POST",
+        // Unauthenticated by definition — the caller has no identity yet — and
+        // the 401 here means "bad code", so the retry-on-401 must not fire.
+        auth: false,
+        body: JSON.stringify({ code }),
+      },
+    );
+
+    if (!response.ok) {
+      const error =
+        {
+          401: LOGIN_CODE_MESSAGES.invalid,
+          422: LOGIN_CODE_MESSAGES.incomplete,
+          429: LOGIN_CODE_MESSAGES.throttled,
+        }[response.status] || extractError(result, LOGIN_CODE_MESSAGES.failed);
+
+      return {
+        success: false,
+        error,
+        throttled: response.status === 429,
+        meta: { ...meta, body: result },
+      };
+    }
+
+    customToken = result?.customToken || result?.data?.customToken;
+    if (!customToken) {
+      console.error("[altonautApi] Login code response had no customToken.");
+      return {
+        success: false,
+        error: LOGIN_CODE_MESSAGES.failed,
+        meta: { ...meta, body: result },
+      };
+    }
+  } catch (error) {
+    // The code may or may not have been spent here, but nothing downstream ran,
+    // so the same digits are still worth one more manual try.
+    console.error("[altonautApi] Login code exchange failed:", error);
+    return { success: false, error: LOGIN_CODE_MESSAGES.network };
+  }
+
+  // Past this point the code is spent. Any failure below is terminal for these
+  // six digits: the user needs a new one off their profile.
+  try {
+    if (!window.firebaseAuth) {
+      throw new Error("Firebase is not initialized.");
+    }
+
+    // The custom token is not an ID token and no backend endpoint accepts it —
+    // it only becomes a credential once Firebase trades it in.
+    const cred = await window.firebaseAuth.signInWithCustomToken(customToken);
+    const idToken = await cred.user.getIdToken();
+    storeIdToken(idToken);
+
+    const result = await exchangeIdTokenForSession(
+      idToken,
+      LOGIN_CODE_MESSAGES.failed,
+    );
+    if (result.success) return result;
+
+    return { ...result, error: LOGIN_CODE_MESSAGES.spent, codeSpent: true };
+  } catch (error) {
+    console.error("[altonautApi] Login code sign-in failed:", error);
+    return {
+      success: false,
+      error: LOGIN_CODE_MESSAGES.spent,
+      codeSpent: true,
+    };
   }
 };
 
@@ -616,6 +771,7 @@ const logCaptivePortalActivity = async (overrides = {}) => {
 // Export API
 window.altonautApi = {
   login,
+  loginWithCode,
   signUp,
   getUser,
   getOrders,

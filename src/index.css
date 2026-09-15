@@ -131,6 +131,91 @@ body.portal {
     text-align: right;
 }
 
+.auth-method-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    width: 100%;
+}
+
+.auth-method-tab {
+    min-width: 0;
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #D1D5DB;
+    border-radius: 0.5rem;
+    background: #fff;
+    color: #374151;
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.25rem;
+    cursor: pointer;
+}
+
+.auth-method-tab.is-selected {
+    background: #3B82F6;
+    border-color: #3B82F6;
+    color: #fff;
+}
+
+.login-code-inputs {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0.5rem;
+    width: 100%;
+}
+
+.login-code-input {
+    width: 100%;
+    min-width: 0;
+    padding: 0.75rem 0;
+    border: 1px solid #D1D5DB;
+    border-radius: 0.5rem;
+    background: #fff;
+    color: #111827;
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 1.5rem;
+    text-align: center;
+    outline: none;
+}
+
+.login-code-input:focus {
+    border-color: #3B82F6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.6);
+}
+
+.login-code-input:disabled {
+    background: #F3F4F6;
+    color: #9CA3AF;
+}
+
+/* The "sign in with email and password" escape hatch is a <button> so it can
+   switch panels, but it has to read as the link it replaces. */
+.link-button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+}
+
+@media (max-width: 375px) {
+    .login-code-inputs {
+        gap: 0.375rem;
+    }
+
+    .login-code-input {
+        padding: 0.625rem 0;
+        font-size: 1.125rem;
+    }
+
+    .auth-method-tab {
+        padding: 0.5rem 0.25rem;
+        font-size: 0.8125rem;
+    }
+}
+
 .order-list-container {
     max-height: 340px;
     overflow-y: auto;
@@ -313,6 +398,7 @@ body.portal {
 .mx-auto { margin-left: auto; margin-right: auto; }
 .mr-2 { margin-right: 0.5rem; }
 .mb-2 { margin-bottom: 0.5rem; }
+.mt-2 { margin-top: 0.5rem; }
 .mb-4 { margin-bottom: 1rem; }
 .mb-6 { margin-bottom: 1.5rem; }
 .mt-4 { margin-top: 1rem; }
@@ -348,6 +434,7 @@ body.portal {
 .text-blue-600 { color: #2563EB; }
 .text-blue-900 { color: #1E3A8A; }
 .text-red-600 { color: #DC2626; }
+.text-red-700 { color: #B91C1C; }
 .text-green-700 { color: #047857; }
 
 .bg-white { background-color: #fff; }
@@ -394,6 +481,7 @@ body.portal {
 
 /* Display helpers */
 .inline-block { display: inline-block; }
+.block { display: block; }
 
 #main-content {
     min-height: var(--vvh, 100dvh);

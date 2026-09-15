@@ -68,6 +68,22 @@ const UI = {
   showCaptiveError: (message) => UI.showError("oper-hint", message, false),
 
   /**
+   * Shows a sign-in error inside whichever sign-in panel the user is looking at,
+   * so a message never lands in the hidden one.
+   * @param {string} message
+   */
+  showActiveAuthError: (message) => {
+    if (
+      AuthMethodManager.current === "code" &&
+      document.getElementById("login-code-error-message")
+    ) {
+      UI.showError("login-code-error-message", message);
+      return;
+    }
+    UI.showAuthError(message);
+  },
+
+  /**
    * Displays a configuration error and hides other UI sections
    * @param {string} message - The error message to display
    */
@@ -185,18 +201,21 @@ const AuthManager = {
   expireSession(message = "Your session has expired. Please sign in again.") {
     sessionStorage.removeItem("authUser");
     window.altonautApi?.clearIdToken?.();
+    LoginCodeManager.reset();
     SectionManager.showAuthSection();
-    UI.showAuthError(message);
+    UI.showActiveAuthError(message);
   },
 
   /**
    * Creates a timeout handler for authentication requests
+   * @param {Function} [showError] - Where to report the timeout (defaults to the
+   *   password panel's error area).
    * @returns {Function} Cleanup function to clear the timeout
    */
-  createTimeoutHandler: () => {
+  createTimeoutHandler: (showError = UI.showAuthError) => {
     const timeoutId = setTimeout(() => {
       UI.hideLoading();
-      UI.showAuthError(
+      showError(
         "Request is taking too long. Please check your connection and try again.",
       );
     }, APP_CONFIG.MAX_WAIT_MS);
@@ -209,8 +228,18 @@ const AuthManager = {
    * @param {Promise} authPromise - Promise that resolves to auth result
    * @param {string} email - User's email address
    * @param {Function} clearTimeout - Function to clear the timeout
+   * @param {Function} [onFailure] - Handles an unsuccessful result; defaults to
+   *   showing its error in the password panel.
+   * @returns {Promise<object>} The auth result (or a failure stub on throw).
    */
-  async handleAuthResponse(authPromise, email, clearTimeout) {
+  async handleAuthResponse(authPromise, email, clearTimeout, onFailure) {
+    const handleFailure =
+      onFailure ||
+      ((result) =>
+        UI.showAuthError(
+          result?.error || "Authentication failed. Please try again.",
+        ));
+
     try {
       const result = await authPromise;
       clearTimeout();
@@ -229,17 +258,22 @@ const AuthManager = {
 
         UI.hideLoading();
         SectionManager.showCaptiveSection(user);
-      } else {
-        UI.hideLoading();
-        const errorMessage =
-          result.error || "Authentication failed. Please try again.";
-        UI.showAuthError(errorMessage);
+        return result;
       }
+
+      UI.hideLoading();
+      handleFailure(result);
+      return result;
     } catch (error) {
       clearTimeout();
       UI.hideLoading();
-      UI.showAuthError("Authentication failed. Please try again.");
       console.error("Authentication error:", error);
+      const failure = {
+        success: false,
+        error: "Authentication failed. Please try again.",
+      };
+      handleFailure(failure);
+      return failure;
     }
   },
 
@@ -264,6 +298,7 @@ const AuthManager = {
     window.firebaseAuth?.signOut?.().catch(() => {});
     document.getElementById("auth-form")?.reset();
     AuthManager.setPasswordVisibility(false);
+    LoginCodeManager.reset();
     document.getElementById("auth-error-message")?.classList.add("hidden");
     SectionManager.showAuthSection();
   },
@@ -280,6 +315,378 @@ const AuthManager = {
     input.type = isVisible ? "text" : "password";
     toggle.textContent = isVisible ? "Hide" : "Unhide";
     toggle.setAttribute("aria-pressed", String(isVisible));
+  },
+};
+
+/**
+ * Chooses between the two ways in: the 6-digit login code (the default) and the
+ * email + password form. Both options stay visible at all times — a user who
+ * cannot use one must always be able to reach the other in a single tap. That
+ * matters more now that codes lead: the per-IP attempt budget is shared by the
+ * whole vessel, so the password form is the fallback for everyone it locks out.
+ */
+const AUTH_METHOD_STORAGE_KEY = "altonautPortalAuthMethod";
+
+const AuthMethodManager = {
+  current: "code",
+
+  panels: () => ({
+    password: document.getElementById("auth-form"),
+    code: document.getElementById("login-code-form"),
+  }),
+
+  tabs: () => ({
+    password: document.getElementById("auth-method-password"),
+    code: document.getElementById("auth-method-code"),
+  }),
+
+  /**
+   * The method this device last used. Only ever the *choice* — a login code is
+   * a live credential and is never persisted anywhere.
+   * @returns {"password"|"code"|null}
+   */
+  readRemembered() {
+    try {
+      const value = localStorage.getItem(AUTH_METHOD_STORAGE_KEY);
+      return value === "code" || value === "password" ? value : null;
+    } catch {
+      // Storage can be unavailable (private mode); fall back to the default.
+      return null;
+    }
+  },
+
+  remember(method) {
+    try {
+      localStorage.setItem(AUTH_METHOD_STORAGE_KEY, method);
+    } catch {
+      // no-op
+    }
+  },
+
+  /**
+   * @param {"password"|"code"} method
+   * @param {{ remember?: boolean, focusPanel?: boolean }} [options]
+   */
+  select(method, { remember = true, focusPanel = false } = {}) {
+    if (method !== "password" && method !== "code") return;
+
+    this.current = method;
+    if (remember) this.remember(method);
+
+    const panels = this.panels();
+    Object.keys(panels).forEach((name) => {
+      panels[name]?.classList.toggle("hidden", name !== method);
+    });
+
+    const tabs = this.tabs();
+    Object.keys(tabs).forEach((name) => {
+      const tab = tabs[name];
+      if (!tab) return;
+      const selected = name === method;
+      tab.classList.toggle("is-selected", selected);
+      tab.setAttribute("aria-selected", String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+    });
+
+    // An error belongs to the panel that produced it; drop the other one's.
+    document
+      .getElementById(
+        method === "code" ? "auth-error-message" : "login-code-error-message",
+      )
+      ?.classList.add("hidden");
+
+    if (focusPanel) {
+      const field =
+        method === "code"
+          ? document.getElementById("login-code-1")
+          : document.getElementById("auth-email");
+      field?.focus();
+    }
+  },
+
+  handleTabKeydown(event, method) {
+    const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(event.key)) return;
+
+    event.preventDefault();
+    const next =
+      event.key === "Home"
+        ? "code"
+        : event.key === "End"
+          ? "password"
+          : method === "code"
+            ? "password"
+            : "code";
+    this.select(next);
+    this.tabs()[next]?.focus();
+  },
+
+  setup() {
+    const tabs = this.tabs();
+    Object.keys(tabs).forEach((method) => {
+      const tab = tabs[method];
+      if (!tab) return;
+      tab.addEventListener("click", () => this.select(method));
+      tab.addEventListener("keydown", (event) =>
+        this.handleTabKeydown(event, method),
+      );
+    });
+
+    document
+      .getElementById("use-password-instead")
+      ?.addEventListener("click", () =>
+        this.select("password", { focusPanel: true }),
+      );
+
+    // Remembering only changes which option starts selected; the other stays
+    // visible without a tap-and-search.
+    this.select(this.readRemembered() || "code", { remember: false });
+  },
+};
+
+/**
+ * Drives the 6-digit login code panel.
+ *
+ * Every failed attempt spends from a rate-limit budget that is shared by the
+ * whole vessel (10 per 15 minutes, per IP — and one Wi-Fi is one IP), so this
+ * rejects malformed input itself, refuses to double-submit, and never retries
+ * on its own.
+ */
+const LoginCodeManager = {
+  LENGTH: 6,
+  submitting: false,
+
+  inputs() {
+    return Array.from(
+      document.querySelectorAll("#login-code-inputs .login-code-input"),
+    );
+  },
+
+  /** @returns {string} The digits entered so far. */
+  value() {
+    return this.inputs()
+      .map((input) => input.value.replace(/\D/g, "").slice(0, 1))
+      .join("");
+  },
+
+  showError(message) {
+    UI.showError("login-code-error-message", message, false);
+  },
+
+  hideError() {
+    document
+      .getElementById("login-code-error-message")
+      ?.classList.add("hidden");
+  },
+
+  clear({ focus = true } = {}) {
+    const inputs = this.inputs();
+    inputs.forEach((input) => {
+      input.value = "";
+    });
+    if (focus) inputs[0]?.focus();
+  },
+
+  /** Returns the panel to a clean, usable state. */
+  reset() {
+    this.setSubmitting(false);
+    this.clear({ focus: false });
+    this.hideError();
+  },
+
+  setSubmitting(isSubmitting) {
+    this.submitting = isSubmitting;
+
+    const button = document.getElementById("login-code-button");
+    if (button) button.disabled = isSubmitting;
+    this.inputs().forEach((input) => {
+      input.disabled = isSubmitting;
+    });
+  },
+
+  /**
+   * Writes digits left to right from `startIndex`, then parks the caret on the
+   * first still-empty box.
+   */
+  fill(startIndex, digits) {
+    const inputs = this.inputs();
+
+    digits.split("").forEach((digit, offset) => {
+      const input = inputs[startIndex + offset];
+      if (input) input.value = digit;
+    });
+
+    const nextEmpty = inputs.findIndex((input) => !input.value);
+    const target = nextEmpty === -1 ? inputs[inputs.length - 1] : inputs[nextEmpty];
+    target?.focus();
+    target?.select?.();
+  },
+
+  handleInput(index, event) {
+    const input = event.target;
+    const digits = input.value.replace(/\D/g, "");
+
+    // A box can receive more than one digit — a paste into it, or a browser
+    // autofilling the whole code into the first field. Spread it instead of
+    // dropping the rest.
+    input.value = "";
+    this.hideError();
+
+    if (!digits) return;
+
+    this.fill(index, digits.slice(0, this.LENGTH - index));
+
+    // Submitting on the sixth digit is the point of this screen: typing six
+    // characters and then hunting for a button is the friction it removes.
+    if (this.value().length === this.LENGTH) this.submit();
+  },
+
+  handleKeydown(index, event) {
+    const inputs = this.inputs();
+
+    if (event.key === "Backspace") {
+      // Let the browser clear a filled box; step back out of an empty one.
+      if (inputs[index]?.value) return;
+      const previous = inputs[index - 1];
+      if (!previous) return;
+      event.preventDefault();
+      previous.value = "";
+      previous.focus();
+      return;
+    }
+
+    if (event.key === "ArrowLeft" && inputs[index - 1]) {
+      event.preventDefault();
+      inputs[index - 1].focus();
+      return;
+    }
+
+    if (event.key === "ArrowRight" && inputs[index + 1]) {
+      event.preventDefault();
+      inputs[index + 1].focus();
+    }
+  },
+
+  handlePaste(index, event) {
+    const text = event.clipboardData?.getData("text") ?? "";
+    // People read codes aloud in groups and paste them that way ("041 820",
+    // "041-820"). Strip the separators rather than letting them reach the API,
+    // where they would cost the vessel a 422.
+    const digits = text.replace(/\D/g, "");
+    if (!digits) return;
+
+    event.preventDefault();
+    this.hideError();
+
+    // A whole code replaces whatever is there; a single digit lands where it
+    // was dropped.
+    const start = digits.length > 1 ? 0 : index;
+    if (start === 0) this.clear({ focus: false });
+    this.fill(start, digits.slice(0, this.LENGTH - start));
+
+    if (this.value().length === this.LENGTH) this.submit();
+  },
+
+  async submit() {
+    // A double submit spends two of the vessel's shared attempts, and the
+    // second always fails because the first consumed the code.
+    if (this.submitting) return;
+
+    const code = this.value();
+    if (code.length !== this.LENGTH) {
+      this.showError(`Enter all ${this.LENGTH} digits.`);
+      const firstEmpty = this.inputs().find((input) => !input.value);
+      firstEmpty?.focus();
+      return;
+    }
+
+    // The Omada controller has been seen dropping script files outright; fail
+    // over to the form that still works rather than hanging on a disabled one.
+    if (typeof window.altonautApi?.loginWithCode !== "function") {
+      this.showError(
+        "Signing in with a code is unavailable. Please use your email and password.",
+      );
+      AuthMethodManager.select("password", { remember: false });
+      UI.showError(
+        "auth-error-message",
+        "Signing in with a code is unavailable. Please use your email and password.",
+        false,
+      );
+      return;
+    }
+
+    this.hideError();
+    this.setSubmitting(true);
+    UI.showLoading();
+
+    const clearTimeout = AuthManager.createTimeoutHandler((message) =>
+      this.showError(message),
+    );
+
+    const result = await AuthManager.handleAuthResponse(
+      window.altonautApi.loginWithCode(code),
+      undefined,
+      clearTimeout,
+      (failure) => this.handleFailure(failure),
+    );
+
+    this.setSubmitting(false);
+
+    // Success lands on the existing post-login path — same session, same
+    // activity log, same voucher screens. Nothing branches on how we got here;
+    // all that is left is to not leave a live credential sitting in the DOM.
+    if (result?.success) this.clear({ focus: false });
+  },
+
+  handleFailure(result) {
+    // Re-enable first so the handlers below can move focus.
+    this.setSubmitting(false);
+
+    const message = result?.error || "Sign in failed. Please try again.";
+
+    if (result?.throttled) {
+      // The per-IP budget is spent for everyone on this Wi-Fi, so the password
+      // form is the only way in — put the user on it rather than leaving them
+      // to find it.
+      this.clear({ focus: false });
+      AuthMethodManager.select("password", {
+        remember: false,
+        focusPanel: true,
+      });
+      UI.showError("auth-error-message", message, false);
+      return;
+    }
+
+    this.showError(message);
+
+    // A rejected or spent code is dead: the next move is a fresh one off the
+    // profile, never a retry of the same six digits.
+    if (result?.codeSpent || result?.meta?.status === 401) {
+      this.clear();
+      return;
+    }
+
+    const firstEmpty = this.inputs().find((input) => !input.value);
+    (firstEmpty || this.inputs()[0])?.focus();
+  },
+
+  setup() {
+    this.inputs().forEach((input, index) => {
+      input.addEventListener("input", (event) => this.handleInput(index, event));
+      input.addEventListener("keydown", (event) =>
+        this.handleKeydown(index, event),
+      );
+      input.addEventListener("paste", (event) => this.handlePaste(index, event));
+      // Focusing a filled box selects it, so the next digit replaces it.
+      input.addEventListener("focus", () => input.select?.());
+    });
+
+    document
+      .getElementById("login-code-form")
+      ?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        this.submit();
+      });
   },
 };
 
@@ -736,6 +1143,9 @@ const EventManager = {
    * Initializes all event listeners for the application
    */
   setup() {
+    AuthMethodManager.setup();
+    LoginCodeManager.setup();
+
     document
       .getElementById("toggle-password")
       ?.addEventListener("click", () => {
@@ -833,8 +1243,14 @@ const KeyboardManager = {
         }, 100);
       };
 
+      const scrollableFieldIds = [
+        "auth-email",
+        "auth-password",
+        ...Array.from({ length: 6 }, (_, i) => `login-code-${i + 1}`),
+      ];
+
       ["focus", "click"].forEach((type) => {
-        ["auth-email", "auth-password"].forEach((id) => {
+        scrollableFieldIds.forEach((id) => {
           document
             .getElementById(id)
             ?.addEventListener(type, ensureInputVisible);
