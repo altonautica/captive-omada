@@ -62,7 +62,31 @@
                         <p id="auth-subtitle" class="text-gray-600 small-screen-text">Please sign in with your account to continue</p>
                     </header>
 
-                    <form id="auth-form" class="space-y-4 small-screen-mb" novalidate>
+                    <div id="auth-method-tabs" class="auth-method-tabs mb-4" role="tablist" aria-label="Sign-in method">
+                        <button
+                            type="button"
+                            id="auth-method-code"
+                            class="auth-method-tab is-selected focus-ring"
+                            role="tab"
+                            aria-selected="true"
+                            aria-controls="login-code-form"
+                        >
+                            Sign in with a code
+                        </button>
+                        <button
+                            type="button"
+                            id="auth-method-password"
+                            class="auth-method-tab focus-ring"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="auth-form"
+                            tabindex="-1"
+                        >
+                            Email &amp; password
+                        </button>
+                    </div>
+
+                    <form id="auth-form" class="space-y-4 small-screen-mb hidden" novalidate role="tabpanel" aria-labelledby="auth-method-password">
                         <div>
                             <label for="auth-email" class="block text-sm font-medium text-gray-700 mb-2">Email Address</label>
                             <input
@@ -127,6 +151,97 @@
                         <div id="auth-error-message" class="hidden bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm" role="alert" aria-live="polite">
                             Invalid email or password. Please try again.
                         </div>
+                    </form>
+
+                    <form id="login-code-form" class="space-y-4 small-screen-mb" novalidate role="tabpanel" aria-labelledby="auth-method-code">
+                        <div>
+                            <span id="login-code-label" class="block text-sm font-medium text-gray-700 mb-2">Enter your 6-digit code</span>
+                            <div
+                                id="login-code-inputs"
+                                class="login-code-inputs"
+                                role="group"
+                                aria-labelledby="login-code-label"
+                                aria-describedby="login-code-help"
+                            >
+                            <input
+                                id="login-code-1"
+                                class="login-code-input"
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="one-time-code"
+                                maxlength="6"
+                                pattern="[0-9]*"
+                                aria-label="Digit 1 of 6"
+                            >
+                            <input
+                                id="login-code-2"
+                                class="login-code-input"
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="one-time-code"
+                                maxlength="6"
+                                pattern="[0-9]*"
+                                aria-label="Digit 2 of 6"
+                            >
+                            <input
+                                id="login-code-3"
+                                class="login-code-input"
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="one-time-code"
+                                maxlength="6"
+                                pattern="[0-9]*"
+                                aria-label="Digit 3 of 6"
+                            >
+                            <input
+                                id="login-code-4"
+                                class="login-code-input"
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="one-time-code"
+                                maxlength="6"
+                                pattern="[0-9]*"
+                                aria-label="Digit 4 of 6"
+                            >
+                            <input
+                                id="login-code-5"
+                                class="login-code-input"
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="one-time-code"
+                                maxlength="6"
+                                pattern="[0-9]*"
+                                aria-label="Digit 5 of 6"
+                            >
+                            <input
+                                id="login-code-6"
+                                class="login-code-input"
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="one-time-code"
+                                maxlength="6"
+                                pattern="[0-9]*"
+                                aria-label="Digit 6 of 6"
+                            >
+                            </div>
+                            <p id="login-code-help" class="text-gray-600 text-sm mt-2">Find your code on your profile in the app.</p>
+                        </div>
+
+                        <button
+                            type="submit"
+                            id="login-code-button"
+                            class="w-full bg-primary hover:bg-primary-dark text-white font-semibold py-3 px-4 rounded-lg transition duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 small-screen-input"
+                        >
+                            Sign In
+                        </button>
+
+                        <div class="text-center mt-4 small-screen-mt">
+                            <p class="text-gray-600 text-sm">
+                                <button type="button" id="use-password-instead" class="text-primary font-medium hover:text-primary-dark underline focus-ring link-button">Sign in with email and password</button>
+                            </p>
+                        </div>
+
+                        <div id="login-code-error-message" class="hidden bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm" role="alert" aria-live="polite"></div>
                     </form>
                 </section>
 
