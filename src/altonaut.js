@@ -381,10 +381,11 @@ const signUp = async (name, email, password) => {
 // already signed in — instead of typing an email and password on a laptop that
 // has just joined the Wi-Fi.
 //
-// This is three calls, not one. POST /auth/login-code does NOT log anyone in:
-// it returns a Firebase *custom* token, which only the Firebase SDK accepts.
-// Only after signInWithCustomToken() do we hold a real ID token, and that is
-// what /auth/login has always taken.
+// One call, and no Firebase: POST /auth/login-code checks the code and starts a
+// 24-hour backend session itself, so this works even on a vessel whose pre-auth
+// allowlist cannot reach Google. Firebase never learns about this session
+// (firebaseAuth.currentUser stays null); requests carry it in the cookie and in
+// the Bearer header, like the password path's ID token.
 //
 // Failed attempts are rate limited per IP, and on a vessel one IP is the whole
 // boat: every guest shares the budget. So this never sends a request it can
@@ -420,9 +421,9 @@ const normalizeLoginCode = (value) =>
 /**
  * Sign in with a 6-digit login code.
  *
- * Spending the code (step 1) is irreversible: if Firebase or the session
- * exchange then fails, the code is gone and resubmitting it returns 401. The
- * caller must send the user back to code entry — never retry the same digits.
+ * Spending the code is irreversible: if the response is lost or malformed, the
+ * code is gone and resubmitting it returns 401. The caller must send the user
+ * back to code entry — never retry the same digits.
  *
  * @param {string} rawCode - Digits, with or without spaces/dashes.
  * @returns {Promise<{ success: boolean, user?: object, error?: string,
@@ -436,7 +437,6 @@ const loginWithCode = async (rawCode) => {
     return { success: false, error: LOGIN_CODE_MESSAGES.incomplete };
   }
 
-  let customToken;
   try {
     const { response, result, meta } = await createApiRequest(
       `${API_BASE_URL}/auth/login-code`,
@@ -465,49 +465,28 @@ const loginWithCode = async (rawCode) => {
       };
     }
 
-    customToken = result?.customToken || result?.data?.customToken;
-    if (!customToken) {
-      console.error("[altonautApi] Login code response had no customToken.");
+    // The backend has already set the AuthToken cookie. The token in the body
+    // is the same session, kept for the Bearer header on browsers that refuse
+    // the cross-site cookie (iOS) — the slot the password path's ID token uses.
+    const user = extractUser(result);
+    const token = result?.data?.token;
+    if (!user || !token) {
+      console.error("[altonautApi] Login code response had no session.");
       return {
         success: false,
-        error: LOGIN_CODE_MESSAGES.failed,
+        error: LOGIN_CODE_MESSAGES.spent,
+        codeSpent: true,
         meta: { ...meta, body: result },
       };
     }
+
+    storeIdToken(token);
+    return { success: true, user, meta };
   } catch (error) {
     // The code may or may not have been spent here, but nothing downstream ran,
     // so the same digits are still worth one more manual try.
     console.error("[altonautApi] Login code exchange failed:", error);
     return { success: false, error: LOGIN_CODE_MESSAGES.network };
-  }
-
-  // Past this point the code is spent. Any failure below is terminal for these
-  // six digits: the user needs a new one off their profile.
-  try {
-    if (!window.firebaseAuth) {
-      throw new Error("Firebase is not initialized.");
-    }
-
-    // The custom token is not an ID token and no backend endpoint accepts it —
-    // it only becomes a credential once Firebase trades it in.
-    const cred = await window.firebaseAuth.signInWithCustomToken(customToken);
-    const idToken = await cred.user.getIdToken();
-    storeIdToken(idToken);
-
-    const result = await exchangeIdTokenForSession(
-      idToken,
-      LOGIN_CODE_MESSAGES.failed,
-    );
-    if (result.success) return result;
-
-    return { ...result, error: LOGIN_CODE_MESSAGES.spent, codeSpent: true };
-  } catch (error) {
-    console.error("[altonautApi] Login code sign-in failed:", error);
-    return {
-      success: false,
-      error: LOGIN_CODE_MESSAGES.spent,
-      codeSpent: true,
-    };
   }
 };
 
