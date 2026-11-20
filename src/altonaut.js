@@ -233,83 +233,61 @@ const createApiRequest = async (url, options = {}) => {
   }
 };
 
-/**
- * Finishes a login that already holds a Firebase ID token: trades it with the
- * backend for the AuthToken session cookie and the user profile.
- *
- * Shared by the password form and the login-code flow — the session the two
- * produce is byte-for-byte identical, so nothing downstream of this may branch
- * on how the user got here.
- *
- * @param {string} idToken
- * @param {string} [failureMessage] - Fallback copy when the backend sends none.
- * @returns {Promise<{ success: boolean, user?: object, error?: string, meta?: object }>}
- */
-const exchangeIdTokenForSession = async (
-  idToken,
-  failureMessage = "Login failed.",
-) => {
-  const { response, result, meta } = await createApiRequest(
-    `${API_BASE_URL}/auth/login`,
-    {
-      method: "POST",
-      // The idToken is the credential here, in the body — no bearer header
-      // (and no retry-on-401) is wanted on the exchange itself.
-      auth: false,
-      body: JSON.stringify({ idToken }),
-    },
-  );
-
-  const user = extractUser(result);
-  if (response.ok && user) {
-    return { success: true, user, meta };
-  }
-
-  return {
-    success: false,
-    error: extractError(result, failureMessage),
-    meta: { ...meta, body: result },
-  };
+// Copy for POST /auth/portal/login's answers — the same wording the Firebase
+// SDK path used (mapFirebaseAuthError), so users see no difference.
+const PASSWORD_LOGIN_MESSAGES = {
+  401: "Invalid email or password. Please try again.",
+  429: "Too many attempts. Please try again later.",
+  network: "Network error. Please check your connection.",
+  failed: "Login failed.",
 };
 
 /**
  * Login function
  *
- * Signs the user in with Firebase (client-side), then exchanges the resulting
- * Firebase ID token with the backend. On success the backend sets an HttpOnly
- * session cookie (the credential downstream getUser/getOrders calls rely on)
- * and returns the user profile in the body — there is no token in the payload.
+ * Sends the email + password to the backend, which checks them with Firebase
+ * from the server and starts a 24-hour session (NXS-1503). The device never
+ * talks to Google, so this works on a vessel whose pre-auth allowlist cannot
+ * reach it, and even if the Firebase SDK never loaded. The backend sets the
+ * AuthToken cookie and returns { data: { user, token } }; the token is kept
+ * for the Bearer header that iOS needs (it refuses the cross-site cookie).
  *
  * @param {string} email
  * @param {string} password
  * @returns {Promise<{ success: boolean, user?: object, error?: string, meta?: object }>}
  */
 const login = async (email, password) => {
-  let idToken;
   try {
-    if (!window.firebaseAuth) {
-      throw new Error("Firebase is not initialized.");
-    }
-    const cred = await window.firebaseAuth.signInWithEmailAndPassword(
-      email,
-      password,
+    const { response, result, meta } = await createApiRequest(
+      `${API_BASE_URL}/auth/portal/login`,
+      {
+        method: "POST",
+        // The credentials are in the body; no bearer header, and a 401 here
+        // means "wrong password", so the retry-on-401 must not fire.
+        auth: false,
+        body: JSON.stringify({ email, password }),
+      },
     );
-    idToken = await cred.user.getIdToken();
-    // Cache it so a page reload can still authenticate on browsers that drop
-    // the cross-site session cookie (iOS Safari).
-    storeIdToken(idToken);
-  } catch (error) {
-    // Firebase throws on bad credentials; convert to the {success,error} shape
-    // handleAuthResponse expects so the user sees a specific message.
-    console.error("Firebase sign-in error:", error);
-    return { success: false, error: mapFirebaseAuthError(error) };
-  }
 
-  try {
-    return await exchangeIdTokenForSession(idToken, "Login failed.");
+    const user = extractUser(result);
+    const token = result?.data?.token;
+    if (response.ok && user && token) {
+      storeIdToken(token);
+      return { success: true, user, meta };
+    }
+
+    // 403 carries the backend's own reason (disabled account, unverified
+    // email), so show it; 401 and 429 get the established wording.
+    return {
+      success: false,
+      error:
+        PASSWORD_LOGIN_MESSAGES[response.status] ||
+        extractError(result, PASSWORD_LOGIN_MESSAGES.failed),
+      meta: { ...meta, body: result },
+    };
   } catch (error) {
     console.error("Login error:", error);
-    throw error;
+    return { success: false, error: PASSWORD_LOGIN_MESSAGES.network };
   }
 };
 
@@ -381,7 +359,7 @@ const signUp = async (name, email, password) => {
 // already signed in — instead of typing an email and password on a laptop that
 // has just joined the Wi-Fi.
 //
-// One call, and no Firebase: POST /auth/login-code checks the code and starts a
+// One call, and no Firebase: POST /auth/portal/login-code checks the code and starts a
 // 24-hour backend session itself, so this works even on a vessel whose pre-auth
 // allowlist cannot reach Google. Firebase never learns about this session
 // (firebaseAuth.currentUser stays null); requests carry it in the cookie and in
@@ -439,7 +417,7 @@ const loginWithCode = async (rawCode) => {
 
   try {
     const { response, result, meta } = await createApiRequest(
-      `${API_BASE_URL}/auth/login-code`,
+      `${API_BASE_URL}/auth/portal/login-code`,
       {
         method: "POST",
         // Unauthenticated by definition — the caller has no identity yet — and

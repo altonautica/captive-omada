@@ -55,7 +55,7 @@ describe("altonautApi.loginWithCode", () => {
     // token, no Google round trip, no second call to /auth/login.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [exchangeCall] = fetchMock.mock.calls;
-    expect(exchangeCall[0]).toContain("/auth/login-code");
+    expect(exchangeCall[0]).toContain("/auth/portal/login-code");
     expect(bodyOf(exchangeCall)).toEqual({ code: "041820" });
     expect(exchangeCall[1].headers.Authorization).toBeUndefined();
     expect(exchangeCall[1].credentials).toBe("include");
