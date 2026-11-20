@@ -89,10 +89,6 @@ body.portal {
     }
 }
 
-.firebase-section {
-    display: block;
-}
-
 .captive-section {
     display: none;
 }

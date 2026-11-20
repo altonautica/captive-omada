@@ -22,21 +22,13 @@ const SESSION = {
 };
 
 describe("altonautApi.login (email + password)", () => {
-  let firebase;
-
   beforeEach(() => {
     window.history.replaceState({}, "", "/portal/entry/controller/site/portal");
     sessionStorage.clear();
     delete window.altonautApi;
-    // Fails the test if the password path ever touches the Firebase SDK.
-    firebase = {
-      currentUser: null,
-      signInWithEmailAndPassword: vi.fn(),
-    };
-    window.firebaseAuth = firebase;
   });
 
-  it("checks the password on the backend in one call, never through Firebase", async () => {
+  it("checks the password on the backend in one call", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(SESSION));
     vi.stubGlobal("fetch", fetchMock);
     loadAltonaut();
@@ -55,21 +47,10 @@ describe("altonautApi.login (email + password)", () => {
     expect(init.headers.Authorization).toBeUndefined();
     expect(init.credentials).toBe("include");
 
-    expect(firebase.signInWithEmailAndPassword).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       success: true,
       user: { email: "crew@example.com" },
     });
-  });
-
-  it("works when the Firebase SDK never loaded", async () => {
-    delete window.firebaseAuth;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse(SESSION)));
-    loadAltonaut();
-
-    await expect(
-      window.altonautApi.login("crew@example.com", "pw"),
-    ).resolves.toMatchObject({ success: true });
   });
 
   it("sends the session token as a Bearer header afterwards, for iOS", async () => {

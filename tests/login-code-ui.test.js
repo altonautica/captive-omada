@@ -84,7 +84,7 @@ describe("Captive portal sign-in with a code", () => {
         vouchers: { active: [], past: [] },
       }),
       logCaptivePortalActivity: vi.fn(),
-      clearIdToken: vi.fn(),
+      clearSessionToken: vi.fn(),
       getOmadaPathInfo: vi.fn(() => ({ siteId: "site" })),
     };
     window.submitVoucherAuth = vi.fn();

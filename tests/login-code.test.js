@@ -14,18 +14,6 @@ const jsonResponse = (body, { ok = true, status = 200 } = {}) => ({
   text: vi.fn().mockResolvedValue(JSON.stringify(body)),
 });
 
-/** A Firebase stub that fails the test if code login ever touches it. */
-const stubFirebase = () => {
-  const signInWithCustomToken = vi.fn();
-  const signInWithEmailAndPassword = vi.fn();
-  window.firebaseAuth = {
-    currentUser: null,
-    signInWithCustomToken,
-    signInWithEmailAndPassword,
-  };
-  return { signInWithCustomToken, signInWithEmailAndPassword };
-};
-
 const SESSION = {
   data: {
     user: { email: "crew@example.com", permissions: ["wifi"] },
@@ -40,19 +28,17 @@ describe("altonautApi.loginWithCode", () => {
     window.history.replaceState({}, "", "/portal/entry/controller/site/portal");
     sessionStorage.clear();
     delete window.altonautApi;
-    delete window.firebaseAuth;
   });
 
-  it("signs in with one call and never touches Firebase", async () => {
+  it("signs in with one call to the backend", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(SESSION));
     vi.stubGlobal("fetch", fetchMock);
-    const firebase = stubFirebase();
     loadAltonaut();
 
     const result = await window.altonautApi.loginWithCode("041820");
 
     // The backend checks the code and starts the session itself: no custom
-    // token, no Google round trip, no second call to /auth/login.
+    // token, no second call to /auth/login.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [exchangeCall] = fetchMock.mock.calls;
     expect(exchangeCall[0]).toContain("/auth/portal/login-code");
@@ -60,22 +46,11 @@ describe("altonautApi.loginWithCode", () => {
     expect(exchangeCall[1].headers.Authorization).toBeUndefined();
     expect(exchangeCall[1].credentials).toBe("include");
 
-    expect(firebase.signInWithCustomToken).not.toHaveBeenCalled();
-    expect(firebase.signInWithEmailAndPassword).not.toHaveBeenCalled();
 
     expect(result).toMatchObject({
       success: true,
       user: { email: "crew@example.com", permissions: ["wifi"] },
     });
-  });
-
-  it("works when the Firebase SDK never loaded", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse(SESSION)));
-    loadAltonaut();
-
-    await expect(
-      window.altonautApi.loginWithCode("041820"),
-    ).resolves.toMatchObject({ success: true });
   });
 
   it("sends the session token as a Bearer header afterwards, for iOS", async () => {
@@ -84,7 +59,6 @@ describe("altonautApi.loginWithCode", () => {
       .mockResolvedValueOnce(jsonResponse(SESSION))
       .mockResolvedValueOnce(jsonResponse({ data: [] }));
     vi.stubGlobal("fetch", fetchMock);
-    stubFirebase();
     loadAltonaut();
 
     await window.altonautApi.loginWithCode("041820");
@@ -99,7 +73,6 @@ describe("altonautApi.loginWithCode", () => {
   it("strips the spaces and dashes people type when a code is read aloud", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(SESSION));
     vi.stubGlobal("fetch", fetchMock);
-    stubFirebase();
     loadAltonaut();
 
     await window.altonautApi.loginWithCode(" 041-820 ");
@@ -110,7 +83,6 @@ describe("altonautApi.loginWithCode", () => {
   it("rejects malformed codes locally rather than spending a shared throttle attempt", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    stubFirebase();
     loadAltonaut();
 
     for (const bad of ["", "12345", "1234567", "04182a", null]) {
@@ -133,7 +105,6 @@ describe("altonautApi.loginWithCode", () => {
           ),
         ),
     );
-    const firebase = stubFirebase();
     loadAltonaut();
 
     const result = await window.altonautApi.loginWithCode("041820");
@@ -145,7 +116,6 @@ describe("altonautApi.loginWithCode", () => {
       meta: { status: 401 },
     });
     expect(result.codeSpent).toBeUndefined();
-    expect(firebase.signInWithCustomToken).not.toHaveBeenCalled();
   });
 
   it("flags a throttled network so the caller can surface the password form", async () => {
@@ -158,7 +128,6 @@ describe("altonautApi.loginWithCode", () => {
         ),
       ),
     );
-    stubFirebase();
     loadAltonaut();
 
     await expect(
@@ -177,7 +146,6 @@ describe("altonautApi.loginWithCode", () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse({ customToken: "custom-token-123" }));
     vi.stubGlobal("fetch", fetchMock);
-    stubFirebase();
     loadAltonaut();
 
     const result = await window.altonautApi.loginWithCode("041820");
@@ -193,7 +161,6 @@ describe("altonautApi.loginWithCode", () => {
 
   it("lets the user retry when the exchange itself never completed", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
-    stubFirebase();
     loadAltonaut();
 
     const result = await window.altonautApi.loginWithCode("041820");
