@@ -79,30 +79,6 @@ const extractError = (result, fallback = "Request failed") => {
   return result.error || result.message || result.msg || fallback;
 };
 
-// Maps Firebase Auth error codes to the friendly copy already used in the UI.
-const mapFirebaseAuthError = (error) => {
-  switch (error?.code) {
-    case "auth/invalid-email":
-      return "Please enter a valid email address.";
-    case "auth/user-not-found":
-    case "auth/wrong-password":
-    case "auth/invalid-credential":
-      return "Invalid email or password. Please try again.";
-    case "auth/user-disabled":
-      return "This account has been disabled. Please contact support.";
-    case "auth/email-already-in-use":
-      return "An account with this email already exists.";
-    case "auth/weak-password":
-      return "Password is too weak. Please use at least 6 characters.";
-    case "auth/too-many-requests":
-      return "Too many attempts. Please try again later.";
-    case "auth/network-request-failed":
-      return "Network error. Please check your connection.";
-    default:
-      return error?.message || "Authentication failed. Please try again.";
-  }
-};
-
 // Bearer-token auth (iOS fix)
 // --------------------------------------------------------------------------
 // The backend's AuthToken cookie is a *cross-site* cookie here: the portal is
@@ -113,56 +89,36 @@ const mapFirebaseAuthError = (error) => {
 // surfacing as "Your session has expired". Android Chrome still accepts
 // SameSite=None cookies, which is why it only broke on iOS.
 //
-// The backend accepts `Authorization: Bearer <Firebase ID token>` on protected
+// The backend accepts `Authorization: Bearer <session token>` on protected
 // routes, so we send that on every request as well. The cookie is still sent
 // (credentials: "include") for browsers where it works; the header is what
-// makes iOS work.
-const ID_TOKEN_STORAGE_KEY = "altonautIdToken";
+// makes iOS work. The token is the 24-hour portal session that
+// /auth/portal/login and /auth/portal/login-code return (NXS-1503).
+const SESSION_TOKEN_STORAGE_KEY = "altonautSessionToken";
 
-const readStoredIdToken = () => {
+const readStoredSessionToken = () => {
   try {
-    return sessionStorage.getItem(ID_TOKEN_STORAGE_KEY);
+    return sessionStorage.getItem(SESSION_TOKEN_STORAGE_KEY);
   } catch {
     return null;
   }
 };
 
-const storeIdToken = (token) => {
+const storeSessionToken = (token) => {
   try {
-    if (token) sessionStorage.setItem(ID_TOKEN_STORAGE_KEY, token);
+    if (token) sessionStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
   } catch {
-    // Storage can be unavailable (private mode); the in-memory Firebase user
-    // still supplies the token for the life of this page.
+    // Storage can be unavailable (private mode); the cookie still carries the
+    // session where the browser accepts it.
   }
 };
 
-const clearIdToken = () => {
+const clearSessionToken = () => {
   try {
-    sessionStorage.removeItem(ID_TOKEN_STORAGE_KEY);
+    sessionStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
   } catch {
     // no-op
   }
-};
-
-/**
- * Current Firebase ID token for the Authorization header.
- * Prefers a live token from the signed-in Firebase user (which auto-refreshes),
- * and falls back to the copy cached at login for page reloads.
- * @param {boolean} [forceRefresh] - Bypass Firebase's token cache.
- * @returns {Promise<string|null>}
- */
-const getIdTokenForRequest = async (forceRefresh = false) => {
-  const user = window.firebaseAuth?.currentUser;
-  if (user) {
-    try {
-      const token = await user.getIdToken(forceRefresh);
-      storeIdToken(token);
-      return token;
-    } catch (error) {
-      console.warn("[altonautApi] Failed to get Firebase ID token:", error);
-    }
-  }
-  return forceRefresh ? null : readStoredIdToken();
 };
 
 const createApiRequest = async (url, options = {}) => {
@@ -206,21 +162,10 @@ const createApiRequest = async (url, options = {}) => {
   };
 
   try {
-    const token = auth ? await getIdTokenForRequest() : null;
-    let { response, result } = await send(token);
-
-    // A cached ID token expires after an hour; on a 401/403 retry once with a
-    // freshly minted one before treating the session as gone.
-    if (
-      auth &&
-      (response.status === 401 || response.status === 403) &&
-      window.firebaseAuth?.currentUser
-    ) {
-      const freshToken = await getIdTokenForRequest(true);
-      if (freshToken && freshToken !== token) {
-        ({ response, result } = await send(freshToken));
-      }
-    }
+    // No refresh: a portal session lasts 24 hours, and a 401 after that means
+    // signing in again.
+    const token = auth ? readStoredSessionToken() : null;
+    const { response, result } = await send(token);
 
     return {
       response,
@@ -233,145 +178,60 @@ const createApiRequest = async (url, options = {}) => {
   }
 };
 
-/**
- * Finishes a login that already holds a Firebase ID token: trades it with the
- * backend for the AuthToken session cookie and the user profile.
- *
- * Shared by the password form and the login-code flow — the session the two
- * produce is byte-for-byte identical, so nothing downstream of this may branch
- * on how the user got here.
- *
- * @param {string} idToken
- * @param {string} [failureMessage] - Fallback copy when the backend sends none.
- * @returns {Promise<{ success: boolean, user?: object, error?: string, meta?: object }>}
- */
-const exchangeIdTokenForSession = async (
-  idToken,
-  failureMessage = "Login failed.",
-) => {
-  const { response, result, meta } = await createApiRequest(
-    `${API_BASE_URL}/auth/login`,
-    {
-      method: "POST",
-      // The idToken is the credential here, in the body — no bearer header
-      // (and no retry-on-401) is wanted on the exchange itself.
-      auth: false,
-      body: JSON.stringify({ idToken }),
-    },
-  );
-
-  const user = extractUser(result);
-  if (response.ok && user) {
-    return { success: true, user, meta };
-  }
-
-  return {
-    success: false,
-    error: extractError(result, failureMessage),
-    meta: { ...meta, body: result },
-  };
+// Copy for POST /auth/portal/login's answers — the same wording the portal
+// showed before sign-in moved to the backend, so users see no difference.
+const PASSWORD_LOGIN_MESSAGES = {
+  401: "Invalid email or password. Please try again.",
+  429: "Too many attempts. Please try again later.",
+  network: "Network error. Please check your connection.",
+  failed: "Login failed.",
 };
 
 /**
  * Login function
  *
- * Signs the user in with Firebase (client-side), then exchanges the resulting
- * Firebase ID token with the backend. On success the backend sets an HttpOnly
- * session cookie (the credential downstream getUser/getOrders calls rely on)
- * and returns the user profile in the body — there is no token in the payload.
+ * Sends the email + password to the backend, which checks them and starts a
+ * 24-hour session (NXS-1503). The device never talks to Google, so this works
+ * on a vessel whose pre-auth allowlist cannot reach it. The backend sets the
+ * AuthToken cookie and returns { data: { user, token } }; the token is kept
+ * for the Bearer header that iOS needs (it refuses the cross-site cookie).
  *
  * @param {string} email
  * @param {string} password
  * @returns {Promise<{ success: boolean, user?: object, error?: string, meta?: object }>}
  */
 const login = async (email, password) => {
-  let idToken;
   try {
-    if (!window.firebaseAuth) {
-      throw new Error("Firebase is not initialized.");
-    }
-    const cred = await window.firebaseAuth.signInWithEmailAndPassword(
-      email,
-      password,
-    );
-    idToken = await cred.user.getIdToken();
-    // Cache it so a page reload can still authenticate on browsers that drop
-    // the cross-site session cookie (iOS Safari).
-    storeIdToken(idToken);
-  } catch (error) {
-    // Firebase throws on bad credentials; convert to the {success,error} shape
-    // handleAuthResponse expects so the user sees a specific message.
-    console.error("Firebase sign-in error:", error);
-    return { success: false, error: mapFirebaseAuthError(error) };
-  }
-
-  try {
-    return await exchangeIdTokenForSession(idToken, "Login failed.");
-  } catch (error) {
-    console.error("Login error:", error);
-    throw error;
-  }
-};
-
-/**
- * Sign up function
- * @param {string} name
- * @param {string} email
- * @param {string} password
- * @returns {Promise<{ success: boolean, user?: object, error?: string, meta?: object }>}
- */
-const signUp = async (name, email, password) => {
-  let idToken;
-  try {
-    if (!window.firebaseAuth) {
-      throw new Error("Firebase is not initialized.");
-    }
-    const cred = await window.firebaseAuth.createUserWithEmailAndPassword(
-      email,
-      password,
-    );
-    if (name) {
-      // The account already exists at this point; a display-name failure must not
-      // abort signup (else a retry hits auth/email-already-in-use).
-      try {
-        await cred.user.updateProfile({ displayName: name });
-      } catch (profileError) {
-        console.warn("Failed to update display name:", profileError);
-      }
-    }
-    idToken = await cred.user.getIdToken();
-    storeIdToken(idToken);
-  } catch (error) {
-    console.error("Firebase sign-up error:", error);
-    return { success: false, error: mapFirebaseAuthError(error) };
-  }
-
-  try {
-    // Assumes the backend /api/auth/signup accepts { idToken, name }, sets the
-    // session cookie, and returns the user profile. If it still owns account
-    // creation with raw credentials, revert to the email/password payload.
     const { response, result, meta } = await createApiRequest(
-      `${API_BASE_URL}/auth/signup`,
+      `${API_BASE_URL}/auth/portal/login`,
       {
         method: "POST",
+        // The credentials are in the body; no bearer header, and a 401 here
+        // means "wrong password", so the retry-on-401 must not fire.
         auth: false,
-        body: JSON.stringify({ idToken, name }),
+        body: JSON.stringify({ email, password }),
       },
     );
 
     const user = extractUser(result);
-    if (response.ok && user) {
+    const token = result?.data?.token;
+    if (response.ok && user && token) {
+      storeSessionToken(token);
       return { success: true, user, meta };
     }
 
+    // 403 carries the backend's own reason (disabled account, unverified
+    // email), so show it; 401 and 429 get the established wording.
     return {
       success: false,
-      error: extractError(result, "Sign up failed."),
+      error:
+        PASSWORD_LOGIN_MESSAGES[response.status] ||
+        extractError(result, PASSWORD_LOGIN_MESSAGES.failed),
       meta: { ...meta, body: result },
     };
   } catch (error) {
-    console.error("Sign up error:", error);
-    throw error;
+    console.error("Login error:", error);
+    return { success: false, error: PASSWORD_LOGIN_MESSAGES.network };
   }
 };
 
@@ -381,10 +241,10 @@ const signUp = async (name, email, password) => {
 // already signed in — instead of typing an email and password on a laptop that
 // has just joined the Wi-Fi.
 //
-// This is three calls, not one. POST /auth/login-code does NOT log anyone in:
-// it returns a Firebase *custom* token, which only the Firebase SDK accepts.
-// Only after signInWithCustomToken() do we hold a real ID token, and that is
-// what /auth/login has always taken.
+// One call: POST /auth/portal/login-code checks the code and starts a 24-hour
+// backend session itself, so this works even on a vessel whose pre-auth
+// allowlist cannot reach Google. Requests carry the session in the cookie and
+// in the Bearer header, like the password path.
 //
 // Failed attempts are rate limited per IP, and on a vessel one IP is the whole
 // boat: every guest shares the budget. So this never sends a request it can
@@ -420,9 +280,9 @@ const normalizeLoginCode = (value) =>
 /**
  * Sign in with a 6-digit login code.
  *
- * Spending the code (step 1) is irreversible: if Firebase or the session
- * exchange then fails, the code is gone and resubmitting it returns 401. The
- * caller must send the user back to code entry — never retry the same digits.
+ * Spending the code is irreversible: if the response is lost or malformed, the
+ * code is gone and resubmitting it returns 401. The caller must send the user
+ * back to code entry — never retry the same digits.
  *
  * @param {string} rawCode - Digits, with or without spaces/dashes.
  * @returns {Promise<{ success: boolean, user?: object, error?: string,
@@ -436,10 +296,9 @@ const loginWithCode = async (rawCode) => {
     return { success: false, error: LOGIN_CODE_MESSAGES.incomplete };
   }
 
-  let customToken;
   try {
     const { response, result, meta } = await createApiRequest(
-      `${API_BASE_URL}/auth/login-code`,
+      `${API_BASE_URL}/auth/portal/login-code`,
       {
         method: "POST",
         // Unauthenticated by definition — the caller has no identity yet — and
@@ -465,49 +324,94 @@ const loginWithCode = async (rawCode) => {
       };
     }
 
-    customToken = result?.customToken || result?.data?.customToken;
-    if (!customToken) {
-      console.error("[altonautApi] Login code response had no customToken.");
+    // The backend has already set the AuthToken cookie. The token in the body
+    // is the same session, kept for the Bearer header on browsers that refuse
+    // the cross-site cookie (iOS) — the slot the password path's ID token uses.
+    const user = extractUser(result);
+    const token = result?.data?.token;
+    if (!user || !token) {
+      console.error("[altonautApi] Login code response had no session.");
       return {
         success: false,
-        error: LOGIN_CODE_MESSAGES.failed,
+        error: LOGIN_CODE_MESSAGES.spent,
+        codeSpent: true,
         meta: { ...meta, body: result },
       };
     }
+
+    storeSessionToken(token);
+    return { success: true, user, meta };
   } catch (error) {
     // The code may or may not have been spent here, but nothing downstream ran,
     // so the same digits are still worth one more manual try.
     console.error("[altonautApi] Login code exchange failed:", error);
     return { success: false, error: LOGIN_CODE_MESSAGES.network };
   }
+};
 
-  // Past this point the code is spent. Any failure below is terminal for these
-  // six digits: the user needs a new one off their profile.
+// Forgot password (NXS-1503)
+// --------------------------------------------------------------------------
+// POST /auth/portal/password-reset emails the account's reset link and leaves
+// a login code waiting at support, both from the server — the device never
+// talks to Google. It answers the same whether or not the address has an
+// account, so the caller shows that answer as is.
+//
+// Rate limited per IP (5 per 15 minutes, every call counted), and on a vessel
+// one IP is the whole boat, so malformed addresses are rejected locally and
+// nothing is ever retried automatically.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const PASSWORD_RESET_MESSAGES = {
+  invalid: "Please enter a valid email address.",
+  throttled:
+    "Too many requests from this network. Please wait a few minutes and try again.",
+  failed: "Could not send the reset request. Please try again.",
+  network: "Network error. Please check your connection.",
+};
+
+/**
+ * Request a password reset for `email`.
+ * @param {string} rawEmail
+ * @returns {Promise<{ success: boolean, message?: string, error?: string, throttled?: boolean }>}
+ */
+const requestPasswordReset = async (rawEmail) => {
+  const email = typeof rawEmail === "string" ? rawEmail.trim() : "";
+  if (!EMAIL_PATTERN.test(email)) {
+    return { success: false, error: PASSWORD_RESET_MESSAGES.invalid };
+  }
+
   try {
-    if (!window.firebaseAuth) {
-      throw new Error("Firebase is not initialized.");
+    const { response, result } = await createApiRequest(
+      `${API_BASE_URL}/auth/portal/password-reset`,
+      {
+        method: "POST",
+        auth: false,
+        body: JSON.stringify({ email }),
+      },
+    );
+
+    if (response.ok) {
+      return { success: true, message: extractError(result, "") };
     }
 
-    // The custom token is not an ID token and no backend endpoint accepts it —
-    // it only becomes a credential once Firebase trades it in.
-    const cred = await window.firebaseAuth.signInWithCustomToken(customToken);
-    const idToken = await cred.user.getIdToken();
-    storeIdToken(idToken);
+    if (response.status === 429) {
+      return {
+        success: false,
+        throttled: true,
+        error: PASSWORD_RESET_MESSAGES.throttled,
+      };
+    }
 
-    const result = await exchangeIdTokenForSession(
-      idToken,
-      LOGIN_CODE_MESSAGES.failed,
-    );
-    if (result.success) return result;
-
-    return { ...result, error: LOGIN_CODE_MESSAGES.spent, codeSpent: true };
-  } catch (error) {
-    console.error("[altonautApi] Login code sign-in failed:", error);
     return {
       success: false,
-      error: LOGIN_CODE_MESSAGES.spent,
-      codeSpent: true,
+      error:
+        response.status === 422
+          ? PASSWORD_RESET_MESSAGES.invalid
+          : PASSWORD_RESET_MESSAGES.failed,
     };
+  } catch (error) {
+    console.error("[altonautApi] Password reset request failed:", error);
+    return { success: false, error: PASSWORD_RESET_MESSAGES.network };
   }
 };
 
@@ -772,11 +676,11 @@ const logCaptivePortalActivity = async (overrides = {}) => {
 window.altonautApi = {
   login,
   loginWithCode,
-  signUp,
+  requestPasswordReset,
   getUser,
   getOrders,
   getMyVouchers,
   getOmadaPathInfo,
   logCaptivePortalActivity,
-  clearIdToken,
+  clearSessionToken,
 };

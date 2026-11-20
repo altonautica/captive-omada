@@ -200,7 +200,7 @@ const AuthManager = {
    */
   expireSession(message = "Your session has expired. Please sign in again.") {
     sessionStorage.removeItem("authUser");
-    window.altonautApi?.clearIdToken?.();
+    window.altonautApi?.clearSessionToken?.();
     LoginCodeManager.reset();
     SectionManager.showAuthSection();
     UI.showActiveAuthError(message);
@@ -294,8 +294,8 @@ const AuthManager = {
    */
   logout() {
     sessionStorage.removeItem("authUser");
-    window.altonautApi?.clearIdToken?.();
-    window.firebaseAuth?.signOut?.().catch(() => {});
+    window.altonautApi?.clearSessionToken?.();
+    ResetPasswordManager.close({ restoreMethod: false });
     document.getElementById("auth-form")?.reset();
     AuthManager.setPasswordVisibility(false);
     LoginCodeManager.reset();
@@ -441,6 +441,102 @@ const AuthMethodManager = {
     // Remembering only changes which option starts selected; the other stays
     // visible without a tap-and-search.
     this.select(this.readRemembered() || "code", { remember: false });
+  },
+};
+
+/**
+ * The "Reset password" panel (NXS-1503). Replaces the sign-in panels while it is
+ * open; the backend emails the reset link and leaves a code at support, and
+ * answers the same whether or not the address has an account.
+ *
+ * The request budget is per IP (5 per 15 minutes, every call counted), and one
+ * vessel is one IP, so this validates locally, refuses to double-submit and
+ * never retries on its own.
+ */
+const ResetPasswordManager = {
+  inFlight: false,
+
+  els: () => ({
+    form: document.getElementById("reset-password-form"),
+    email: document.getElementById("reset-password-email"),
+    button: document.getElementById("reset-password-button"),
+    success: document.getElementById("reset-password-success"),
+    error: document.getElementById("reset-password-error"),
+    tabs: document.getElementById("auth-method-tabs"),
+  }),
+
+  open() {
+    const els = this.els();
+    if (!els.form) return;
+
+    // Carry over whatever the user already typed on the sign-in form.
+    const typed = document.getElementById("auth-email")?.value;
+    if (els.email && typed && !els.email.value) els.email.value = typed;
+
+    els.success?.classList.add("hidden");
+    els.error?.classList.add("hidden");
+    els.tabs?.classList.add("hidden");
+    document.getElementById("auth-form")?.classList.add("hidden");
+    document.getElementById("login-code-form")?.classList.add("hidden");
+    els.form.classList.remove("hidden");
+    els.email?.focus();
+  },
+
+  /**
+   * @param {{ restoreMethod?: boolean }} [options] - false when the caller
+   *   restores the sign-in panels itself (logout).
+   */
+  close({ restoreMethod = true } = {}) {
+    const els = this.els();
+    if (!els.form || els.form.classList.contains("hidden")) return;
+
+    els.form.classList.add("hidden");
+    els.tabs?.classList.remove("hidden");
+    if (restoreMethod) {
+      AuthMethodManager.select("password", { remember: false, focusPanel: true });
+    }
+  },
+
+  async submit() {
+    if (this.inFlight) return;
+    const els = this.els();
+    els.success?.classList.add("hidden");
+    els.error?.classList.add("hidden");
+
+    this.inFlight = true;
+    if (els.button) els.button.disabled = true;
+    try {
+      const result = await window.altonautApi.requestPasswordReset(
+        els.email?.value,
+      );
+      if (result.success) {
+        if (els.success) {
+          els.success.textContent =
+            result.message ||
+            "If that account exists, we have emailed a link to reset its password.";
+          els.success.classList.remove("hidden");
+        }
+      } else if (els.error) {
+        els.error.textContent = result.error;
+        els.error.classList.remove("hidden");
+      }
+    } finally {
+      this.inFlight = false;
+      if (els.button) els.button.disabled = false;
+    }
+  },
+
+  setup() {
+    document
+      .getElementById("reset-password-open")
+      ?.addEventListener("click", () => this.open());
+    document
+      .getElementById("reset-password-back")
+      ?.addEventListener("click", () => this.close());
+    this.els().form?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.submit();
+    });
   },
 };
 
@@ -1145,6 +1241,7 @@ const EventManager = {
   setup() {
     AuthMethodManager.setup();
     LoginCodeManager.setup();
+    ResetPasswordManager.setup();
 
     document
       .getElementById("toggle-password")

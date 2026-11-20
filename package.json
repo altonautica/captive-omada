@@ -1,6 +1,6 @@
 {
   "name": "captive-omada",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
   "scripts": {
     "dev": "npx --yes serve -l 4173 src",
@@ -9,7 +9,7 @@
     "clean": "rm -rf dist/stage",
     "build:tailwind": "mkdir -p dist && tailwindcss -c tailwind.config.js -i ./src/tailwind.input.css -o ./dist/tailwind.min.css --minify",
     "build:stage": "mkdir -p dist/stage && cp -R src/. dist/stage/ && sed -i '' 's|dist/tailwind.min.css|tailwind.min.css|g' dist/stage/index.html && cp dist/tailwind.min.css dist/stage/tailwind.min.css",
-    "build:zip": "cd dist/stage && zip -r ../portal-$(date -u +%Y-%m-%dT%H-%M-%SZ).zip .",
+    "build:zip": "cd dist/stage && rm -f ../portal-v$npm_package_version.zip && zip -qr ../portal-v$npm_package_version.zip .",
     "build": "npm run clean && npm run build:tailwind && npm run build:stage && npm run build:zip"
   },
   "devDependencies": {
