@@ -178,8 +178,27 @@ describe("My Vouchers UI", () => {
     await window.refreshMyVouchers();
 
     expect(document.body.textContent).toMatch(/\d{2} Jul 2026/);
-    expect(document.body.textContent).toContain("256 MB / 2 GB");
+    // 256 Omada MB used is 268 decimal MB; a 2048 MB limit was sold as 2 GB.
+    expect(document.body.textContent).toContain("268 MB / 2 GB");
   });
+
+  it.each([
+    ["a plan GB code (9536 MB)", 9536, 5000, "5.24 GB / 10 GB"],
+    ["a code minted at 1024 MB per GB", 10240, 5000, "5.24 GB / 10 GB"],
+    ["a sub-GB plan GB code (476 MB)", 476, 100, "105 MB / 500 MB"],
+    ["an unused code", 4768, 0, "0 MB / 5 GB"],
+  ])(
+    "shows %s in the plan GB it was sold in",
+    async (_label, totalQuota, usedQuota, expected) => {
+      window.altonautApi.getMyVouchers.mockResolvedValue(
+        success([voucher({ usedQuota, totalQuota })], []),
+      );
+
+      await window.refreshMyVouchers();
+
+      expect(document.body.textContent).toContain(expected);
+    },
+  );
 
   it("submits active vouchers through the existing Omada flow", async () => {
     window.altonautApi.getMyVouchers.mockResolvedValue(
