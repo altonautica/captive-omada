@@ -921,17 +921,41 @@ const MyVouchersManager = {
     return `${day} ${month} ${date.getFullYear()}`;
   },
 
-  formatQuota(value) {
+  // NEXUS sends a voucher's usedQuota/totalQuota in Omada MB (binary, 2^20 bytes), but crew
+  // packages are sold in plan GB (decimal, 10^9 bytes), the GB the upstream link is billed in.
+  // A "10 GB" voucher is minted as 9536 MB (codes minted before that hold 10240 MB) and must
+  // read "10 GB" either way.
+  toOmadaMb(value) {
     if (value === null || value === undefined || value === "") return null;
 
     const mb = Number(value);
-    if (Number.isNaN(mb)) return null;
+    return Number.isFinite(mb) ? Math.max(0, mb) : null;
+  },
 
-    if (mb >= 1024) {
-      const gb = mb / 1024;
-      return `${Number.isInteger(gb) ? gb : gb.toFixed(2)} GB`;
-    }
-    return `${mb} MB`;
+  // Plan GB as text: whole or two-decimal GB from 1 GB up, whole decimal MB below it.
+  formatPlanGb(gb) {
+    if (gb >= 1) return `${Number(gb.toFixed(2))} GB`;
+    return `${Math.round(gb * 1000)} MB`;
+  },
+
+  // A voucher's limit as the GB it was sold as: a whole multiple of 1024 MB is that many GB (the
+  // way it was minted before plan GB, and how Omada labels it); otherwise plan GB to two
+  // decimals, so 9536 MB (9.9996 GB, rounded down when minted) reads 10 GB.
+  formatQuotaLimit(value) {
+    const mb = this.toOmadaMb(value);
+    if (mb === null) return null;
+
+    if (mb > 0 && mb % 1024 === 0) return `${mb / 1024} GB`;
+    const soldGb = Math.round(((mb * 1024 * 1024) / 1e9) * 100) / 100;
+    return this.formatPlanGb(soldGb);
+  },
+
+  // Data used, in plan GB: 1024 Omada MB used is 1.07 GB.
+  formatQuotaUsage(value) {
+    const mb = this.toOmadaMb(value);
+    if (mb === null) return null;
+
+    return this.formatPlanGb((mb * 1024 * 1024) / 1e9);
   },
 
   createTextElement(tagName, className, text) {
@@ -1141,9 +1165,9 @@ const MyVouchersManager = {
       ),
     );
 
-    const totalQuota = this.formatQuota(voucher.totalQuota);
+    const totalQuota = this.formatQuotaLimit(voucher.totalQuota);
     if (totalQuota !== null) {
-      const usedQuota = this.formatQuota(voucher.usedQuota) || "0 MB";
+      const usedQuota = this.formatQuotaUsage(voucher.usedQuota) || "0 MB";
       content.appendChild(
         this.createDetail("Data", `${usedQuota} / ${totalQuota}`),
       );
